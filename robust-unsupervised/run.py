@@ -305,19 +305,23 @@ if __name__ == '__main__':
 
             # ---- pFID: collect all W++ predictions for this task ----
             abs_experiment = os.getcwd()   # we are inside directory(experiment_path)
-            pred_paths = [
+            all_pred_paths = [
                 os.path.join(abs_experiment, "inversions", f"{j:04d}", "pred_W++.png")
                 for j in range(len(image_paths))
             ]
-            pred_paths = [p for p in pred_paths if os.path.exists(p)]
+            pred_paths = [p for p in all_pred_paths if os.path.exists(p)]
+            missing = [p for p in all_pred_paths if not os.path.exists(p)]
+            if missing:
+                print(f"  [pFID] {len(missing)} pred_W++.png file(s) missing — skipped images above")
 
             if pred_paths:
+                print(f"  [pFID] computing over {len(pred_paths)} images...")
                 pfid = compute_pfid(pred_paths, abs_experiment, suffix="_W++")
                 scores_by_task[task_key]["pFID"] = pfid
                 pfid_str = f"{pfid:.2f}" if pfid is not None else "failed"
                 print(f"\n  pFID ({task_key}): {pfid_str}")
             else:
-                print("  [pFID] no pred_W++.png files found, skipping")
+                print(f"  [pFID] no pred_W++.png files found at {abs_experiment}/inversions/")
 
         except Exception as task_err:
             print(f"\n  [SKIP] degradation '{task_key}' failed — {task_err}")
