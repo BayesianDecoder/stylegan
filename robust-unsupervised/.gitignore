@@ -10,7 +10,7 @@
 /data_main/
 /pretrained_networks/
 /specialists/
-/benchmark/*.npz
+# /benchmark/*.npz  — reference stats needed for pFID, kept in repo
 /datasets/
 
 /.envrc

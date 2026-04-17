@@ -257,38 +257,42 @@ if __name__ == '__main__':
         if task_key not in scores_by_task:
             scores_by_task[task_key] = {"W": [], "W+": [], "W++": [], "pFID": None}
 
-        with directory(experiment_path):
-            print(experiment_path)
-            print(os.path.abspath(config.dataset_path))
+        try:
+            with directory(experiment_path):
+                print(experiment_path)
+                print(os.path.abspath(config.dataset_path))
 
-            for j, image_path in enumerate(image_paths):
-                with directory(f"inversions/{j:04d}"):
-                    print(f"- {j:04d}")
+                for j, image_path in enumerate(image_paths):
+                    try:
+                        with directory(f"inversions/{j:04d}"):
+                            print(f"- {j:04d}")
 
-                    ground_truth = open_image(image_path, config.resolution)
-                    degradation = task.init_degradation()
-                    save_image(ground_truth, f"ground_truth.png")
-                    target = degradation.degrade_ground_truth(ground_truth)
-                    save_image(target, f"target.png")
+                            ground_truth = open_image(image_path, config.resolution)
+                            degradation = task.init_degradation()
+                            save_image(ground_truth, f"ground_truth.png")
+                            target = degradation.degrade_ground_truth(ground_truth)
+                            save_image(target, f"target.png")
 
-                    W_variable = WVariable.sample_from(G)
-                    w_scores = run_phase("W", W_variable, config.global_lr_scale * 0.08, optimizer_cls=NGD)
-                    scores_by_task[task_key]["W"].append(w_scores)
+                            W_variable = WVariable.sample_from(G)
+                            w_scores = run_phase("W", W_variable, config.global_lr_scale * 0.08, optimizer_cls=NGD)
+                            scores_by_task[task_key]["W"].append(w_scores)
 
-                    Wp_variable = WpVariable.from_W(W_variable)
-                    wp_scores = run_phase("W+", Wp_variable, config.global_lr_scale * 0.02, optimizer_cls=torch.optim.Adam)
-                    scores_by_task[task_key]["W+"].append(wp_scores)
+                            Wp_variable = WpVariable.from_W(W_variable)
+                            wp_scores = run_phase("W+", Wp_variable, config.global_lr_scale * 0.02, optimizer_cls=torch.optim.Adam)
+                            scores_by_task[task_key]["W+"].append(wp_scores)
 
-                    Wpp_variable = WppVariable.from_Wp(Wp_variable)
-                    wpp_scores = run_phase("W++", Wpp_variable, config.global_lr_scale * 0.005)
-                    scores_by_task[task_key]["W++"].append(wpp_scores)
+                            Wpp_variable = WppVariable.from_Wp(Wp_variable)
+                            wpp_scores = run_phase("W++", Wpp_variable, config.global_lr_scale * 0.005)
+                            scores_by_task[task_key]["W++"].append(wpp_scores)
 
-                    print(
-                        f"  [{task_key}] img {j:04d}"
-                        f" | W   PSNR {w_scores['PSNR']:6.2f} dB  LPIPS {w_scores['LPIPS']:.4f}"
-                        f" | W+  PSNR {wp_scores['PSNR']:6.2f} dB  LPIPS {wp_scores['LPIPS']:.4f}"
-                        f" | W++ PSNR {wpp_scores['PSNR']:6.2f} dB  LPIPS {wpp_scores['LPIPS']:.4f}"
-                    )
+                            print(
+                                f"  [{task_key}] img {j:04d}"
+                                f" | W   PSNR {w_scores['PSNR']:6.2f} dB  LPIPS {w_scores['LPIPS']:.4f}"
+                                f" | W+  PSNR {wp_scores['PSNR']:6.2f} dB  LPIPS {wp_scores['LPIPS']:.4f}"
+                                f" | W++ PSNR {wpp_scores['PSNR']:6.2f} dB  LPIPS {wpp_scores['LPIPS']:.4f}"
+                            )
+                    except Exception as img_err:
+                        print(f"  [SKIP] img {j:04d} failed — {img_err}")
 
             # ---- pFID: collect all W++ predictions for this task ----
             abs_experiment = os.getcwd()   # we are inside directory(experiment_path)
@@ -305,6 +309,9 @@ if __name__ == '__main__':
                 print(f"\n  pFID ({task_key}): {pfid_str}")
             else:
                 print("  [pFID] no pred_W++.png files found, skipping")
+
+        except Exception as task_err:
+            print(f"\n  [SKIP] degradation '{task_key}' failed — {task_err}")
 
         # Per-task running summary
         print(f"\n--- Scores so far for {task_key} ---")
