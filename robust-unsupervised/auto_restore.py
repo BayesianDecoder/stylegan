@@ -53,6 +53,7 @@ from benchmark.tasks import (
 )
 from robust_unsupervised import (
     LBFGSPhase,
+    LBFGSPhaseWpp,
     MultiscaleLPIPS,
     NGD,
     WVariable,
@@ -133,10 +134,17 @@ def run_phase(label, variable, lr, target, degradation, loss_fn, steps,
                     degradation.degrade_prediction, x, target, degradation.mask
                 ).mean()
                 loss.backward()
+                for p in variable.parameters():
+                    if p.grad is not None:
+                        torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
                 return loss
 
             if isinstance(optimizer, torch.optim.LBFGS):
+                backup = variable.data.detach().clone()
                 optimizer.step(closure)
+                if variable.data.isnan().any() or variable.data.isinf().any():
+                    with torch.no_grad():
+                        variable.data.copy_(backup)
             else:
                 closure()
                 optimizer.step()
@@ -232,10 +240,11 @@ def main(args):
               Wp_variable, lr * 0.02,  target, degradation, loss_fn, s,
               optimizer_cls=torch.optim.Adam)
 
-    # Phase 3 — W++ space with NGD (fine detail)
+    # Phase 3 — W++ space with LBFGS (fine detail)
     Wpp_variable = WppVariable.from_Wp(Wp_variable)
-    run_phase("Phase 3 — W++ (NGD)  ",
-              Wpp_variable, lr * 0.005, target, degradation, loss_fn, s)
+    run_phase("Phase 3 — W++ (LBFGS)",
+              Wpp_variable, lr * 0.005, target, degradation, loss_fn, s,
+              optimizer_cls=LBFGSPhaseWpp)
 
     # ── Save outputs ──────────────────────────────────────────────────────────
     os.makedirs(args.out_dir, exist_ok=True)

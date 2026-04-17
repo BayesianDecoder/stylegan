@@ -27,3 +27,18 @@ class LBFGSPhase(torch.optim.LBFGS):
         super().__init__(params, lr=lr, max_iter=max_iter,
                          history_size=history_size,
                          line_search_fn=line_search_fn)
+
+
+class LBFGSPhaseWpp(torch.optim.LBFGS):
+    """LBFGS tuned for high-dimensional W++ space.
+
+    Reduced max_iter and history_size to avoid the memory/compute blow-up
+    of standard LBFGS on 4.7M parameters. No line search to prevent the
+    NaN failures that occur when strong-Wolfe can't bracket a minimum in
+    non-convex StyleGAN loss landscapes.
+    """
+    def __init__(self, params, lr=1.0, max_iter=5, history_size=5,
+                 line_search_fn=None):
+        super().__init__(params, lr=lr, max_iter=max_iter,
+                         history_size=history_size,
+                         line_search_fn=line_search_fn)

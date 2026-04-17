@@ -110,10 +110,19 @@ def run_phase(label: str, variable: Variable, lr: float, optimizer_cls=NGD):  # 
                 x = variable.to_image()
                 loss = loss_fn(degradation.degrade_prediction, x, target, degradation.mask).mean()
                 loss.backward()
+                # Sanitize gradients so LBFGS line search never sees NaN/inf
+                for p in variable.parameters():
+                    if p.grad is not None:
+                        torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
                 return loss
 
             if isinstance(optimizer, torch.optim.LBFGS):
+                # Save params before step; restore if LBFGS produces NaN
+                backup = variable.data.detach().clone()
                 optimizer.step(closure)
+                if variable.data.isnan().any() or variable.data.isinf().any():
+                    with torch.no_grad():
+                        variable.data.copy_(backup)
             else:
                 closure()
                 optimizer.step()
@@ -282,7 +291,7 @@ if __name__ == '__main__':
                             scores_by_task[task_key]["W+"].append(wp_scores)
 
                             Wpp_variable = WppVariable.from_Wp(Wp_variable)
-                            wpp_scores = run_phase("W++", Wpp_variable, config.global_lr_scale * 0.005)
+                            wpp_scores = run_phase("W++", Wpp_variable, config.global_lr_scale * 0.005, optimizer_cls=LBFGSPhaseWpp)  # type: ignore[arg-type]
                             scores_by_task[task_key]["W++"].append(wpp_scores)
 
                             print(
