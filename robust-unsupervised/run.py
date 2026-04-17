@@ -280,7 +280,7 @@ if __name__ == '__main__':
                     scores_by_task[task_key]["W+"].append(wp_scores)
 
                     Wpp_variable = WppVariable.from_Wp(Wp_variable)
-                    wpp_scores = run_phase("W++", Wpp_variable, config.global_lr_scale * 0.005, optimizer_cls=LBFGSPhase)  # type: ignore[arg-type]
+                    wpp_scores = run_phase("W++", Wpp_variable, config.global_lr_scale * 0.005)
                     scores_by_task[task_key]["W++"].append(wpp_scores)
 
                     print(

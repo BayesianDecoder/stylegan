@@ -232,11 +232,10 @@ def main(args):
               Wp_variable, lr * 0.02,  target, degradation, loss_fn, s,
               optimizer_cls=torch.optim.Adam)
 
-    # Phase 3 — W++ space with LBFGS (fine detail)
+    # Phase 3 — W++ space with NGD (fine detail)
     Wpp_variable = WppVariable.from_Wp(Wp_variable)
-    run_phase("Phase 3 — W++ (LBFGS)",
-              Wpp_variable, lr * 0.005, target, degradation, loss_fn, s,
-              optimizer_cls=LBFGSPhase)
+    run_phase("Phase 3 — W++ (NGD)  ",
+              Wpp_variable, lr * 0.005, target, degradation, loss_fn, s)
 
     # ── Save outputs ──────────────────────────────────────────────────────────
     os.makedirs(args.out_dir, exist_ok=True)
