@@ -260,8 +260,10 @@ if __name__ == '__main__':
             ]
         )
         assert len(image_paths) > 0, "No images found!"
+        image_paths = image_paths[config.start_idx:]
         if config.n_images is not None:
             image_paths = image_paths[:config.n_images]
+        print(f"  Running images {config.start_idx} – {config.start_idx + len(image_paths) - 1} ({len(image_paths)} total)")
 
         if task_key not in scores_by_task:
             scores_by_task[task_key] = {"W": [], "W+": [], "W++": [], "pFID": None}

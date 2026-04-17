@@ -32,8 +32,11 @@ class Config:
     levels: Optional[str] = None
     "Comma-separated levels to run e.g. M or XL,L,M."
 
+    start_idx: int = 0
+    "Index of the first image to process (for batched runs)."
+
     n_images: Optional[int] = None
-    "Limit the number of images to process."
+    "Number of images to process starting from start_idx."
 
     steps: int = 150
     "Number of optimization steps per phase."
