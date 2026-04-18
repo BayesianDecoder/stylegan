@@ -286,15 +286,15 @@ if __name__ == '__main__':
                             save_image(target, f"target.png")
 
                             W_variable = WVariable.sample_from(G)
-                            w_scores = run_phase("W", W_variable, config.global_lr_scale * 0.08, optimizer_cls=NGD)
+                            w_scores = run_phase("W", W_variable, config.global_lr_scale * 0.10, optimizer_cls=LBFGSPhase)  # type: ignore[arg-type]
                             scores_by_task[task_key]["W"].append(w_scores)
 
                             Wp_variable = WpVariable.from_W(W_variable)
-                            wp_scores = run_phase("W+", Wp_variable, config.global_lr_scale * 0.02, optimizer_cls=torch.optim.Adam)
+                            wp_scores = run_phase("W+", Wp_variable, config.global_lr_scale * 0.025, optimizer_cls=torch.optim.Adam)
                             scores_by_task[task_key]["W+"].append(wp_scores)
 
                             Wpp_variable = WppVariable.from_Wp(Wp_variable)
-                            wpp_scores = run_phase("W++", Wpp_variable, config.global_lr_scale * 0.005, optimizer_cls=LBFGSPhaseWpp)  # type: ignore[arg-type]
+                            wpp_scores = run_phase("W++", Wpp_variable, config.global_lr_scale * 0.008)
                             scores_by_task[task_key]["W++"].append(wpp_scores)
 
                             print(

@@ -228,23 +228,22 @@ def main(args):
     s = args.steps
     lr = args.lr_scale
 
-    # Phase 1 — W space with NGD (coarse, fast convergence)
+    # Phase 1 — W space with LBFGS (coarse, fast convergence via curvature)
     W_variable = WVariable.sample_from(G)
-    run_phase("Phase 1 — W   (NGD)  ",
-              W_variable,  lr * 0.08,  target, degradation, loss_fn, s,
-              optimizer_cls=NGD)
+    run_phase("Phase 1 — W   (LBFGS)",
+              W_variable,  lr * 0.10,  target, degradation, loss_fn, s,
+              optimizer_cls=LBFGSPhase)
 
     # Phase 2 — W+ space with Adam (per-layer refinement)
     Wp_variable = WpVariable.from_W(W_variable)
     run_phase("Phase 2 — W+  (Adam) ",
-              Wp_variable, lr * 0.02,  target, degradation, loss_fn, s,
+              Wp_variable, lr * 0.025, target, degradation, loss_fn, s,
               optimizer_cls=torch.optim.Adam)
 
-    # Phase 3 — W++ space with LBFGS (fine detail)
+    # Phase 3 — W++ space with NGD (fine detail)
     Wpp_variable = WppVariable.from_Wp(Wp_variable)
-    run_phase("Phase 3 — W++ (LBFGS)",
-              Wpp_variable, lr * 0.005, target, degradation, loss_fn, s,
-              optimizer_cls=LBFGSPhaseWpp)
+    run_phase("Phase 3 — W++ (NGD)  ",
+              Wpp_variable, lr * 0.008, target, degradation, loss_fn, s)
 
     # ── Save outputs ──────────────────────────────────────────────────────────
     os.makedirs(args.out_dir, exist_ok=True)
