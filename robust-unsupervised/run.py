@@ -246,6 +246,7 @@ if __name__ == '__main__':
 
     for task in tasks:
         experiment_path = f"out/{config.name}/{timestamp}/{task.category}/{task.name}/{task.level}/"
+        abs_experiment_path = os.path.abspath(experiment_path)
         task_key = f"{task.name}/{task.level}"
 
         image_paths = sorted(
@@ -306,7 +307,7 @@ if __name__ == '__main__':
                         print(f"  [SKIP] img {j:04d} failed — {img_err}")
 
             # ---- pFID: collect all W++ predictions for this task ----
-            abs_experiment = os.getcwd()   # we are inside directory(experiment_path)
+            abs_experiment = abs_experiment_path
             all_pred_paths = [
                 os.path.join(abs_experiment, "inversions", f"{j:04d}", "pred_W++.png")
                 for j in range(len(image_paths))
