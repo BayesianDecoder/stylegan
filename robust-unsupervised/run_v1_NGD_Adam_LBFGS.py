@@ -32,31 +32,6 @@ import torchvision.transforms as TVT
 from torchvision.io import read_image, write_png
 
 
-# ── Adaptive LR tables ────────────────────────────────────────────────────────
-#
-# Severity XS → mildest degradation → optimizer can take larger steps safely
-# Severity XL → worst  degradation → rougher loss landscape → smaller steps
-#
-# LBFGS: strong_wolfe line search adapts internally, but the lr cap matters.
-# Tighter cap for XL prevents overshooting when the curvature estimate is poor.
-LBFGS_SCALE = {
-    "XS": 1.00,
-    "S":  0.80,
-    "M":  0.50,
-    "L":  0.30,
-    "XL": 0.10,
-}
-
-# Adam: already adaptive per-parameter, but global LR governs convergence speed.
-# Severe degradations have noisier gradients → lower global LR for stability.
-ADAM_SCALE = {
-    "XS": 1.00,
-    "S":  0.80,
-    "M":  0.60,
-    "L":  0.40,
-    "XL": 0.20,
-}
-
 # Composed tasks use integer levels (2-4 stacked degradations).
 # Map to the closest string level for adaptive LR lookup.
 _INT_TO_LEVEL = {2: "M", 3: "L", 4: "XL"}
@@ -71,6 +46,24 @@ def get_level_str(level) -> str:
 
 # ── Globals set at startup ────────────────────────────────────────────────────
 config = parse_config()
+
+# Build adaptive LR tables from CLI config values so each Kaggle notebook can
+# run a different configuration by passing different --adam_scale_* flags.
+ADAM_SCALE = {
+    "XS": config.adam_scale_xs,
+    "S":  config.adam_scale_s,
+    "M":  config.adam_scale_m,
+    "L":  config.adam_scale_l,
+    "XL": config.adam_scale_xl,
+}
+
+LBFGS_SCALE = {
+    "XS": config.lbfgs_scale_xs,
+    "S":  config.lbfgs_scale_s,
+    "M":  config.lbfgs_scale_m,
+    "L":  config.lbfgs_scale_l,
+    "XL": config.lbfgs_scale_xl,
+}
 benchmark.config.resolution = config.resolution
 
 print(config.name)

@@ -41,6 +41,33 @@ class Config:
     steps: int = 150
     "Number of optimization steps per phase."
 
+    # ── Adaptive LR scales for NGD → Adam → LBFGS (run_v1) ───────────────────
+    # Each scale multiplies the base LR for that optimizer at that severity level.
+    # NGD is always fixed (gradient normalisation makes it scale-invariant).
+    # Vary these across the 3 parallel Kaggle runs to find the best combination.
+
+    adam_scale_xs:  float = 1.00
+    "Adam LR scale for XS degradation level."
+    adam_scale_s:   float = 0.80
+    "Adam LR scale for S degradation level."
+    adam_scale_m:   float = 0.60
+    "Adam LR scale for M degradation level."
+    adam_scale_l:   float = 0.40
+    "Adam LR scale for L degradation level."
+    adam_scale_xl:  float = 0.20
+    "Adam LR scale for XL degradation level."
+
+    lbfgs_scale_xs: float = 1.00
+    "LBFGS LR scale for XS degradation level."
+    lbfgs_scale_s:  float = 0.80
+    "LBFGS LR scale for S degradation level."
+    lbfgs_scale_m:  float = 0.50
+    "LBFGS LR scale for M degradation level."
+    lbfgs_scale_l:  float = 0.30
+    "LBFGS LR scale for L degradation level."
+    lbfgs_scale_xl: float = 0.10
+    "LBFGS LR scale for XL degradation level."
+
 
 def parse_config() -> Config:
     return tyro.cli(Config)
