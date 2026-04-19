@@ -186,31 +186,47 @@ if __name__ == '__main__':
         if config.n_images: imgs = imgs[:config.n_images]
 
         scores[key] = {"W":[], "W+":[], "W++":[], "pFID": None}
+        batch_sz = config.batch_size or len(imgs)
         try:
             with directory(exp):
-                for j, img_path in enumerate(imgs):
-                    try:
-                        with directory(f"inversions/{j:04d}"):
-                            print(f"- {j:04d}")
-                            ground_truth = open_image(img_path, config.resolution)
-                            degradation  = task.init_degradation()
-                            save_image(ground_truth, "ground_truth.png")
-                            target = degradation.degrade_ground_truth(ground_truth)
-                            save_image(target, "target.png")
+                for batch_start in range(0, len(imgs), batch_sz):
+                    batch = imgs[batch_start:batch_start + batch_sz]
+                    for j_rel, img_path in enumerate(batch):
+                        j = batch_start + j_rel
+                        try:
+                            with directory(f"inversions/{j:04d}"):
+                                print(f"- {j:04d}")
+                                ground_truth = open_image(img_path, config.resolution)
+                                degradation  = task.init_degradation()
+                                save_image(ground_truth, "ground_truth.png")
+                                target = degradation.degrade_ground_truth(ground_truth)
+                                save_image(target, "target.png")
 
-                            W_var = WVariable.sample_from(G)
-                            scores[key]["W"].append(run_phase("W", W_var, lr_W, NGD))
+                                W_var = WVariable.sample_from(G)
+                                scores[key]["W"].append(run_phase("W", W_var, lr_W, NGD))
 
-                            Wp_var = WpVariable.from_W(W_var)
-                            scores[key]["W+"].append(run_phase("W+", Wp_var, lr_Wp, torch.optim.Adam))
+                                Wp_var = WpVariable.from_W(W_var)
+                                scores[key]["W+"].append(run_phase("W+", Wp_var, lr_Wp, torch.optim.Adam))
 
-                            Wpp_var = WppVariable.from_Wp(Wp_var)
-                            scores[key]["W++"].append(run_phase("W++", Wpp_var, lr_Wpp, LBFGSPhase))
+                                Wpp_var = WppVariable.from_Wp(Wp_var)
+                                scores[key]["W++"].append(run_phase("W++", Wpp_var, lr_Wpp, LBFGSPhase))
 
-                            s = scores[key]
-                            print(f"  W PSNR {s['W'][-1]['PSNR']:5.2f} | W+ PSNR {s['W+'][-1]['PSNR']:5.2f}"
-                                  f" | W++ PSNR {s['W++'][-1]['PSNR']:5.2f}")
-                    except Exception as e: print(f"  [SKIP] {j:04d} — {e}")
+                                s = scores[key]
+                                print(f"  W   PSNR {s['W'][-1]['PSNR']:5.2f} dB  LPIPS {s['W'][-1]['LPIPS']:.4f}"
+                                      f" | W+  PSNR {s['W+'][-1]['PSNR']:5.2f} dB  LPIPS {s['W+'][-1]['LPIPS']:.4f}"
+                                      f" | W++ PSNR {s['W++'][-1]['PSNR']:5.2f} dB  LPIPS {s['W++'][-1]['LPIPS']:.4f}")
+                        except Exception as e: print(f"  [SKIP] {j:04d} — {e}")
+
+                    # ── Batch summary ─────────────────────────────────────────
+                    n_done = min(batch_start + batch_sz, len(imgs))
+                    print(f"\n--- Batch {batch_start//batch_sz + 1} summary  "
+                          f"(imgs {batch_start}–{n_done-1}, cumulative n={n_done}) ---")
+                    for ph in ["W","W+","W++"]:
+                        e = scores[key][ph]
+                        if e: print(f"  {ph:<4} avg PSNR {_mean([s['PSNR'] for s in e]):5.2f} dB"
+                                    f"  avg LPIPS {_mean([s['LPIPS'] for s in e]):.4f}"
+                                    f"  (n={len(e)})")
+                    print()
 
             preds = [p for p in [os.path.join(abs_exp,"inversions",f"{j:04d}","pred_W++.png")
                                   for j in range(len(imgs))] if os.path.exists(p)]
