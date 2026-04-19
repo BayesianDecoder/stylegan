@@ -41,9 +41,6 @@ class Config:
     steps: int = 150
     "Number of optimization steps per phase."
 
-    batch_size: Optional[int] = None
-    "Print intermediate summary every N images (None = only at the end)."
-
     # ── Adaptive LR scales for NGD → Adam → LBFGS (run_v1) ───────────────────
     # Each scale multiplies the base LR for that optimizer at that severity level.
     # NGD is always fixed (gradient normalisation makes it scale-invariant).

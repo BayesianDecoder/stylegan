@@ -45,6 +45,8 @@ LBFGS_SCALE = {
     "XL": 0.30,   # <-- higher than baseline
 }
 
+_BATCH_SIZE = 5   # print intermediate summary every N images
+
 _INT_TO_LEVEL = {2: "M", 3: "L", 4: "XL"}
 
 def get_level_str(level) -> str:
@@ -186,7 +188,7 @@ if __name__ == '__main__':
         if config.n_images: imgs = imgs[:config.n_images]
 
         scores[key] = {"W":[], "W+":[], "W++":[], "pFID": None}
-        batch_sz = config.batch_size or len(imgs)
+        batch_sz = _BATCH_SIZE
         try:
             with directory(exp):
                 for batch_start in range(0, len(imgs), batch_sz):
