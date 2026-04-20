@@ -22,6 +22,26 @@ timestamp = datetime.datetime.now().isoformat(timespec="seconds").replace(":", "
 G = open_generator(config.pkl_path)
 loss_fn = MultiscaleLPIPS()
 
+# ── Degradation-adaptive LR scaling ──────────────────────────────────────────
+# Harder degradations → noisier gradients + rougher loss landscape → smaller LR.
+# Values from GAN inversion best practices (pSp / e4e / IDInvert literature).
+_LR_SCALE = {"XS": 1.00, "S": 0.80, "M": 0.60, "L": 0.40, "XL": 0.20}
+_INT_TO_LEVEL = {2: "M", 3: "L", 4: "XL"}   # for composed (integer-level) tasks
+
+# ── Optional e4e encoder warm-start ──────────────────────────────────────────
+_e4e_encoder = None
+if config.e4e_path and os.path.exists(config.e4e_path):
+    try:
+        from encoder4editing.models.psp import pSp as _E4eModel
+        _ckpt = torch.load(config.e4e_path, map_location="cpu")
+        _opts = _ckpt["opts"]
+        _opts["checkpoint_path"] = config.e4e_path
+        _e4e_model = _E4eModel(**_opts).to(DEVICE).eval()
+        _e4e_encoder = lambda img: _e4e_model.encoder(img)[:, 0, :]
+        print(f"[e4e] Loaded encoder from {config.e4e_path}")
+    except Exception as _e:
+        print(f"[e4e] Could not load encoder ({_e}); using w_avg fallback.")
+
 # Absolute path to reference FID stats (stays valid even after os.chdir)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _FID_REF    = os.path.join(_SCRIPT_DIR, "benchmark", "FFHQ-X_crops128_ncrops1000.npz")
@@ -247,7 +267,9 @@ if __name__ == '__main__':
     for task in tasks:
         experiment_path = f"out/{config.name}/{timestamp}/{task.category}/{task.name}/{task.level}/"
         abs_experiment_path = os.path.abspath(experiment_path)
-        task_key = f"{task.name}/{task.level}"
+        task_key  = f"{task.name}/{task.level}"
+        level_str = task.level if isinstance(task.level, str) else _INT_TO_LEVEL.get(int(task.level), "M")
+        lr_scale  = _LR_SCALE.get(level_str, 0.60)
 
         image_paths = sorted(
             [
@@ -285,16 +307,24 @@ if __name__ == '__main__':
                             target = degradation.degrade_ground_truth(ground_truth)
                             save_image(target, f"target.png")
 
-                            W_variable = WVariable.sample_from(G)
-                            w_scores = run_phase("W", W_variable, config.global_lr_scale * 0.10, optimizer_cls=LBFGSPhase)  # type: ignore[arg-type]
+                            # ── Stochastic encoder warm-start ────────────────
+                            W_variable = warm_start_W(G, target, level_str, _e4e_encoder)
+
+                            # ── Phase 1: NGD (W) ──────────────────────────────
+                            lr_W = config.global_lr_scale * 0.08 * lr_scale
+                            w_scores = run_phase("W", W_variable, lr_W, optimizer_cls=NGD)
                             scores_by_task[task_key]["W"].append(w_scores)
 
+                            # ── Phase 2: Adam (W+) ────────────────────────────
+                            lr_Wp = config.global_lr_scale * 0.020 * lr_scale
                             Wp_variable = WpVariable.from_W(W_variable)
-                            wp_scores = run_phase("W+", Wp_variable, config.global_lr_scale * 0.025, optimizer_cls=torch.optim.Adam)
+                            wp_scores = run_phase("W+", Wp_variable, lr_Wp, optimizer_cls=torch.optim.Adam)
                             scores_by_task[task_key]["W+"].append(wp_scores)
 
+                            # ── Phase 3: LBFGSPhaseWpp (W++) ─────────────────
+                            lr_Wpp = config.global_lr_scale * 0.003 * lr_scale
                             Wpp_variable = WppVariable.from_Wp(Wp_variable)
-                            wpp_scores = run_phase("W++", Wpp_variable, config.global_lr_scale * 0.008)
+                            wpp_scores = run_phase("W++", Wpp_variable, lr_Wpp, optimizer_cls=LBFGSPhaseWpp)  # type: ignore[arg-type]
                             scores_by_task[task_key]["W++"].append(wpp_scores)
 
                             print(

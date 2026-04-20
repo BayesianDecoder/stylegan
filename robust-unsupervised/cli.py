@@ -41,6 +41,9 @@ class Config:
     steps: int = 150
     "Number of optimization steps per phase."
 
+    e4e_path: Optional[str] = None
+    "Path to e4e encoder checkpoint (.pt). If provided, used as warm-start for inversion."
+
     # ── Adaptive LR scales for NGD → Adam → LBFGS (run_v1) ───────────────────
     # Each scale multiplies the base LR for that optimizer at that severity level.
     # NGD is always fixed (gradient normalisation makes it scale-invariant).
