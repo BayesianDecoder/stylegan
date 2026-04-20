@@ -122,22 +122,21 @@ def train_one_specialist(deg_type: str, data_dir: str, save_dir: str,
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    # SeveritySpecialist — same backbone, only severity head
     model = SeveritySpecialist(
         deg_type=deg_type,
-        dropout_rate=0.5,
-        freeze_backbone=True    # freeze backbone for phase A
+        dropout_rate=0.4,
+        freeze_backbone=True
     ).to(device)
 
-    # Label smoothing helps severity generalize better
-    # Prevents overconfident predictions for adjacent levels
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.2)
+    # Mild label smoothing — severity levels are ordinal so adjacent errors
+    # are less severe than distant ones
+    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
 
-    # Phase A — only severity head trains, backbone frozen
+    # Phase A — only head trains at higher LR
     head_params = list(model.severity_head.parameters())
-    optimizer   = torch.optim.Adam(head_params, lr=1e-3, weight_decay=1e-5)
-    scheduler   = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=5, gamma=0.5
+    optimizer   = torch.optim.Adam(head_params, lr=5e-4, weight_decay=1e-4)
+    scheduler   = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=5, eta_min=1e-5
     )
 
     best_val_loss    = float('inf')
@@ -145,20 +144,21 @@ def train_one_specialist(deg_type: str, data_dir: str, save_dir: str,
     history          = {'train_loss': [], 'val_loss': [],
                         'train_acc': [],  'val_acc': []}
 
-    PHASE_B_START = 10
+    # Unfreeze backbone earlier — severity needs backbone features tuned
+    PHASE_B_START = 5
 
     for epoch in range(1, epochs + 1):
 
-        # Switch to Phase B — unfreeze backbone at epoch 11
+        # Switch to Phase B — unfreeze backbone at epoch 6
         if epoch == PHASE_B_START + 1:
             model.unfreeze_backbone()
             optimizer = torch.optim.Adam(
-                model.parameters(), lr=1e-5, weight_decay=1e-5
+                model.parameters(), lr=3e-5, weight_decay=1e-4
             )
-            scheduler = torch.optim.lr_scheduler.StepLR(
-                optimizer, step_size=5, gamma=0.5
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=epochs - PHASE_B_START, eta_min=1e-6
             )
-            print(f"Phase B started — full fine-tuning")
+            print(f"Phase B started — full fine-tuning at lr=3e-5")
 
         # Train and validate
         train_loss, train_acc = train_one_epoch(

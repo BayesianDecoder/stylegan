@@ -328,18 +328,13 @@ class SpecialistDataset(Dataset):
  
         self.df = self.df.reset_index(drop=True)
  
-        # Same transforms as DegradationDataset
-        # Training gets augmentation, val/test gets only resize+normalize
+        # Severity-safe augmentation:
+        # Only flip and crop — NO ColorJitter which destroys noise/blur signals
         if split == 'train':
             self.transform = transforms.Compose([
                 transforms.Resize((256, 256)),
-                transforms.RandomCrop(224),
+                transforms.CenterCrop(224),
                 transforms.RandomHorizontalFlip(p=0.5),
-                transforms.ColorJitter(
-                    brightness=0.15,
-                    contrast=0.15,
-                    saturation=0.1
-                ),
                 transforms.ToTensor(),
                 transforms.Normalize(
                     mean=[0.485, 0.456, 0.406],
