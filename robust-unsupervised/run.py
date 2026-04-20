@@ -30,6 +30,16 @@ _INT_TO_LEVEL = {2: "M", 3: "L", 4: "XL"}
 _e4e_encoder = None
 if config.e4e_path and os.path.exists(config.e4e_path):
     try:
+        import sys as _sys
+        _here = os.path.dirname(os.path.abspath(__file__))
+        for _e4e_dir in [
+            os.path.join(_here, "..", "encoder4editing"),
+            os.path.join(_here, "encoder4editing"),
+            "/kaggle/working/encoder4editing",
+        ]:
+            if os.path.isdir(_e4e_dir) and _e4e_dir not in _sys.path:
+                _sys.path.insert(0, os.path.abspath(_e4e_dir))
+                break
         from encoder4editing.models.psp import pSp as _E4eModel
         _ckpt = torch.load(config.e4e_path, map_location="cpu")
         _opts = _ckpt["opts"]
