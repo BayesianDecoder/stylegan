@@ -33,10 +33,11 @@ _e4e_encoder = None
 if config.e4e_path and os.path.exists(config.e4e_path):
     try:
         import sys as _sys
+        _here = os.path.dirname(os.path.abspath(__file__))
         # encoder4editing has no setup.py — locate the cloned repo
         for _e4e_dir in [
-            os.path.join(_SCRIPT_DIR, "..", "encoder4editing"),
-            os.path.join(_SCRIPT_DIR, "encoder4editing"),
+            os.path.join(_here, "..", "encoder4editing"),
+            os.path.join(_here, "encoder4editing"),
             "/kaggle/working/encoder4editing",
         ]:
             if os.path.isdir(_e4e_dir) and _e4e_dir not in _sys.path:
