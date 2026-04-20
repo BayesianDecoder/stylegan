@@ -27,4 +27,13 @@ from dataclasses import dataclass, field
 
 from typing import Optional, Type, List, final, Tuple, Callable, Iterator, Iterable, Dict, ClassVar, Union, Any
 
-from torchvision.io import write_video
+try:
+    from torchvision.io import write_video
+except ImportError:
+    write_video = None
+
+DEVICE = (
+    "cuda" if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available()
+    else "cpu"
+)

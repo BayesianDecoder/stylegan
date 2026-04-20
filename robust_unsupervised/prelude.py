@@ -34,7 +34,11 @@ from dataclasses import dataclass, field
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
-DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+DEVICE = (
+    "cuda" if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available()
+    else "cpu"
+)
 
 warnings.filterwarnings("ignore", r"Named tensors and all their associated APIs.*")
 warnings.filterwarnings("ignore", r"Arguments other than a weight enum.*")

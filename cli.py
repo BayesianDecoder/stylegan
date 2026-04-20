@@ -1,8 +1,8 @@
 import tyro
 from dataclasses import dataclass
-from typing import * 
+from typing import *
 
-import sys 
+import sys
 sys.path.append("stylegan2_ada")
 
 
@@ -16,7 +16,7 @@ class Config:
 
     dataset_path: str = "datasets/FFHQ-X"
     "The location of the images to process."
-    
+
     resolution: int = 1024
     "The resolution of your images. Images which are smaller or larger will be resized."
 
@@ -32,11 +32,30 @@ class Config:
     levels: Optional[str] = None
     "Comma-separated levels to run e.g. M or XL,L,M."
 
+    start_idx: int = 0
+    "Index of the first image to process (for batched runs)."
+
     n_images: Optional[int] = None
-    "Limit the number of images to process."
+    "Number of images to process starting from start_idx."
 
     steps: int = 150
     "Number of optimization steps per phase."
+
+    e4e_path: Optional[str] = None
+    "Path to e4e/pSp encoder checkpoint (.pt). Used by run_e4e.py for warm start."
+
+    # ── Adaptive LR scales for NGD → Adam → LBFGS (run_v1) ───────────────────
+    adam_scale_xs:  float = 1.00
+    adam_scale_s:   float = 0.80
+    adam_scale_m:   float = 0.60
+    adam_scale_l:   float = 0.40
+    adam_scale_xl:  float = 0.20
+
+    lbfgs_scale_xs: float = 1.00
+    lbfgs_scale_s:  float = 0.80
+    lbfgs_scale_m:  float = 0.50
+    lbfgs_scale_l:  float = 0.30
+    lbfgs_scale_xl: float = 0.10
 
 
 def parse_config() -> Config:

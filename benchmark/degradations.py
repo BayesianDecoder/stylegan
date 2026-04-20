@@ -204,7 +204,7 @@ class CompressJPEG(Degradation):
             self.k,
             differentiable=True,
             quantization_table=table,
-        ).cuda()  # type: ignore
+        ).to(DEVICE)  # type: ignore
 
     def parameters(self, recurse=False):
         # This is important, it prevents the optimization of DiffJPEG's parameters
@@ -268,12 +268,12 @@ class MaskRandomly(Degradation):
         return (
             torch.from_numpy(1.0 - cv2.pyrDown(cv2.pyrDown(mask)))
             .float()
-            .cuda()[None, None]
+            .to(DEVICE)[None, None]
         )
 
     def _true_degradation(self, x):
         return x * F.interpolate(
-            self.mask, x.shape[-1], mode="bicubic", align_corners=False
+            self.mask, x.shape[-1], mode="bilinear", align_corners=False
         )
 
     def degrade_prediction(self, x):
