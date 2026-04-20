@@ -25,7 +25,11 @@ class MultiscaleLPIPS:
         self.dists_weight = dists_weight
         self.lpips_network = LPIPS(net="vgg", verbose=False).to(DEVICE)
         if _DISTS_AVAILABLE and dists_weight > 0:
-            self.dists_network = _DISTSModel().to(DEVICE)
+            try:
+                self.dists_network = _DISTSModel().to(DEVICE)
+            except Exception as _e:
+                print(f"[DISTS] init failed ({_e}); disabling DISTS loss.")
+                self.dists_network = None
         else:
             self.dists_network = None
 
