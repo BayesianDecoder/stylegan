@@ -51,12 +51,13 @@ TYPE_CFG = {
         epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
         use_class_weights=True, label_smoothing=0.03,
     ),
-    # deartifact: EfficientNet-B0, partial unfreeze (last 4 blocks) at Phase B.
-    # Strong augmentation in dataset (rotation, colour jitter) prevents face-identity
-    # memorisation and forces the model to learn compression frequency features.
-    # lr_finetune lowered from 5e-5 → 3e-5 since augmentation slows convergence.
+    # deartifact: EfficientNet-B0, full backbone unfreeze at Phase B.
+    # Strong augmentation prevents face-identity memorisation (train/val gap ~3%).
+    # Full unfreeze exposes early frequency-detection layers; lr_finetune raised
+    # 3e-5 → 8e-5 since augmentation prevents overfit so higher LR is safe and
+    # needed to move the early conv layers (key for QF detection) fast enough.
     "deartifact": dict(
-        lr_head=3e-4, lr_finetune=3e-5, phase_b=3,
+        lr_head=3e-4, lr_finetune=8e-5, phase_b=3,
         epochs=100, patience=25, mixup_alpha=0.0, skip_phase_b=False,
         use_class_weights=True, label_smoothing=0.08,
         wd_finetune=5e-3,

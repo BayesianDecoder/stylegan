@@ -253,11 +253,15 @@ class DeartifactSpecialist(nn.Module):
         self.severity_head = _make_head(1280, dropout_rate)
 
     def unfreeze_backbone(self):
-        # Unfreeze only last 4 children of EfficientNet features (~30% of params).
-        # Keeps early edge/colour filters frozen — prevents overfitting on 10k images.
-        _partial_unfreeze(self.features, n_blocks_to_unfreeze=4)
+        # Full unfreeze — early EfficientNet blocks detect frequency content, which
+        # is the primary JPEG quality signal (QF=6–18 affects fine-grained textures).
+        # Augmentation (rotation, colour jitter) prevents memorisation so full
+        # unfreeze is safe; partial unfreeze left early frequency layers frozen and
+        # caused the slow ~0.34%/epoch progress.
+        for p in self.features.parameters():
+            p.requires_grad = True
         n = sum(p.numel() for p in self.features.parameters() if p.requires_grad)
-        print(f"[{self.deg_type}] Partial unfreeze — last 4 blocks ({n:,} params)")
+        print(f"[{self.deg_type}] Full backbone unfreeze ({n:,} params)")
 
     def forward(self, x):
         return self.severity_head(self.avgpool(self.features(x)).flatten(1))
