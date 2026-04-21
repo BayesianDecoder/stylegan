@@ -129,49 +129,77 @@ class SeveritySpecialist(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DenoiseSpecialist — EfficientNet-B0 + Laplacian noise branch
+# DenoiseSpecialist — statistics-only MLP, NO backbone
 #
-# WHY the noise branch: ImageNet pretraining teaches the backbone to IGNORE
-# noise (it's treated as irrelevant for object recognition). The Laplacian
-# residual directly measures high-frequency noise power — bypassing the
-# backbone's learned noise-invariance — giving the head an explicit severity
-# signal the backbone would otherwise suppress.
+# WHY no backbone: ImageNet pretraining teaches every CNN to IGNORE noise
+# (noise is "corruption" in ImageNet). Frozen backbone features actively
+# mislead the head (val acc stuck ~59%). Fine-tuning is slow and still
+# fights against years of noise-invariant pretraining.
+#
+# Fix: skip the backbone entirely. Compute 8 hand-crafted noise statistics
+# (Laplacian, Sobel gradients, local variance, HF energy) and feed them to
+# a tiny MLP. These statistics directly measure noise power at multiple
+# scales and cleanly separate XS/S/M/L/XL severity levels.
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DenoiseSpecialist(nn.Module):
 
-    def __init__(self, deg_type="denoise", dropout_rate=0.5, freeze_backbone=True):
+    def __init__(self, deg_type="denoise", dropout_rate=0.3, freeze_backbone=True):
         super().__init__()
         self.deg_type = deg_type
-        backbone      = models.efficientnet_b0(weights='DEFAULT')
-        self.features = backbone.features
-        self.avgpool  = nn.AdaptiveAvgPool2d(1)
-        feat_dim      = 1280
 
-        if freeze_backbone:
-            for p in self.features.parameters():
-                p.requires_grad = False
-
-        # Laplacian kernel — fixed, not learned
+        # Fixed filter kernels — not learned, not part of backbone
         lap = torch.tensor([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]])
+        sx  = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]])
+        sy  = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]])
         self.register_buffer("_lap", lap.view(1, 1, 3, 3))
+        self.register_buffer("_sx",  sx.view(1, 1, 3, 3))
+        self.register_buffer("_sy",  sy.view(1, 1, 3, 3))
 
-        # +1 for the scalar Laplacian noise estimate
-        self.severity_head = _make_head(feat_dim + 1, dropout_rate)
+        # 8 noise statistics → MLP → 5 severity classes
+        self.mlp = nn.Sequential(
+            nn.Linear(8, 128), nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(dropout_rate),
+            nn.Linear(128, 64), nn.BatchNorm1d(64), nn.ReLU(), nn.Dropout(dropout_rate * 0.5),
+            nn.Linear(64, 5),
+        )
 
-    def _noise_estimate(self, x):
-        gray = x.mean(dim=1, keepdim=True)
-        lap  = F.conv2d(gray, self._lap, padding=1)
-        return lap.flatten(1).std(dim=1, keepdim=True)   # (B, 1)
+    def _noise_stats(self, x):
+        """8 noise statistics that directly measure severity at multiple scales."""
+        gray = x.mean(dim=1, keepdim=True)                          # (B,1,H,W)
+
+        # Laplacian: std and mean-abs (HF noise power)
+        lap     = F.conv2d(gray, self._lap, padding=1)
+        lap_std = lap.flatten(1).std(dim=1, keepdim=True)
+        lap_mab = lap.abs().flatten(1).mean(dim=1, keepdim=True)
+
+        # Sobel gradient magnitude: mean and std
+        gx       = F.conv2d(gray, self._sx, padding=1)
+        gy       = F.conv2d(gray, self._sy, padding=1)
+        grad     = (gx ** 2 + gy ** 2).sqrt()
+        grad_mu  = grad.flatten(1).mean(dim=1, keepdim=True)
+        grad_std = grad.flatten(1).std(dim=1, keepdim=True)
+
+        # Local variance: deviation from 8×8 local mean (noise in smooth areas)
+        lmu      = F.avg_pool2d(gray, 8, stride=4, padding=2)
+        lmu_up   = F.interpolate(lmu, size=gray.shape[2:], mode='nearest')
+        resid    = (gray - lmu_up) ** 2
+        lvar_mu  = resid.flatten(1).mean(dim=1, keepdim=True)
+        lvar_std = resid.flatten(1).std(dim=1, keepdim=True)
+
+        # High-frequency energy: image minus box-blurred image
+        blur     = F.avg_pool2d(gray, 5, stride=1, padding=2)
+        hf       = (gray - blur).abs()
+        hf_mu    = hf.flatten(1).mean(dim=1, keepdim=True)
+        hf_std   = hf.flatten(1).std(dim=1, keepdim=True)
+
+        return torch.cat([lap_std, lap_mab, grad_mu, grad_std,
+                          lvar_mu, lvar_std, hf_mu, hf_std], dim=1)  # (B, 8)
 
     def unfreeze_backbone(self):
-        _partial_unfreeze(self.features, n_blocks_to_unfreeze=3)
-        print(f"[{self.deg_type}] Partial unfreeze — last 3 EfficientNet blocks")
+        pass  # no backbone — nothing to unfreeze
 
     def forward(self, x):
-        feat      = self.avgpool(self.features(x)).flatten(1)   # (B, 1280)
-        noise_est = self._noise_estimate(x)                      # (B, 1)
-        return self.severity_head(torch.cat([feat, noise_est], dim=1))
+        return self.mlp(self._noise_stats(x))
 
     def predict_severity(self, x):
         self.eval()

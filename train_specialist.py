@@ -42,11 +42,11 @@ TYPE_CFG = {
         lr_head=5e-4, lr_finetune=3e-5, phase_b=5,
         epochs=30,  patience=7,  mixup_alpha=0.2, skip_phase_b=False,
     ),
-    # denoise: Laplacian branch provides explicit noise signal — backbone
-    # fine-tuning not needed and wastes time; head-only training is enough.
+    # denoise: statistics-only MLP (no backbone) — trains in minutes.
+    # Higher LR because the MLP is tiny and converges fast.
     "denoise": dict(
-        lr_head=3e-4, lr_finetune=5e-6, phase_b=999,
-        epochs=40,  patience=10, mixup_alpha=0.4, skip_phase_b=True,
+        lr_head=1e-3, lr_finetune=0, phase_b=999,
+        epochs=60,  patience=15, mixup_alpha=0.3, skip_phase_b=True,
     ),
     # deartifact: unfreeze only last 1 block — faster, avoids overfitting
     "deartifact": dict(
