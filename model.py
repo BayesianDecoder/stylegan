@@ -224,72 +224,41 @@ class DenoiseSpecialist(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DeartifactSpecialist — statistics-only MLP, NO backbone
+# DeartifactSpecialist — EfficientNet-B0, aggressive fine-tune from Phase B
 #
-# Same reasoning as denoise: ImageNet backbone is trained to IGNORE
-# JPEG artifacts (they're "corruption" during ImageNet training). Frozen or
-# slowly fine-tuned, it suppresses the exact signal we need.
+# Statistics-only failed (33% val): the JPEG block period is likely not 8px
+# in the resized images (1024px images compressed then downscaled → period ≈2px).
+# No hand-crafted statistic works at the wrong scale.
 #
-# JPEG artifacts live at 8-pixel block boundaries. The key signal is the
-# PERIODICITY of gradients at lag 8: a peak at lag-8 relative to lag-7/9
-# indicates blocking regardless of crop offset (shift-invariant).
-#
-# RandomCrop during training shifts the 8-pixel JPEG grid by 0-7 pixels, so
-# exact-boundary stats (measuring at fixed multiples of 8) are wrong ~7/8 of
-# the time. Lag-gradient ratios work for any offset — they detect the period,
-# not the phase.
+# The CNN was already at 62% with a FROZEN backbone — visual signal is there.
+# The only bottleneck was lr_finetune=2e-5. At 1e-4 (50× higher), the early
+# conv layers can rapidly re-learn JPEG-artifact-sensitive filters instead of
+# the ImageNet-texture filters.
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DeartifactSpecialist(nn.Module):
-    """Statistics-only MLP for JPEG artifact severity. NO backbone, NO mixup."""
+    """EfficientNet-B0 specialist — full backbone unfreeze at Phase B with lr=1e-4."""
 
-    def __init__(self, deg_type="deartifact", dropout_rate=0.3, freeze_backbone=True):
+    def __init__(self, deg_type="deartifact", dropout_rate=0.35, freeze_backbone=True):
         super().__init__()
         self.deg_type = deg_type
-        lap = torch.tensor([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]])
-        self.register_buffer("_lap", lap.view(1, 1, 3, 3))
+        backbone      = models.efficientnet_b0(weights='DEFAULT')
+        self.features = backbone.features
+        self.avgpool  = nn.AdaptiveAvgPool2d(1)
 
-        self.mlp = nn.Sequential(
-            nn.Linear(10, 256), nn.ReLU(), nn.Dropout(dropout_rate),
-            nn.Linear(256, 128), nn.ReLU(), nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(128, 5),
-        )
+        if freeze_backbone:
+            for p in self.features.parameters():
+                p.requires_grad = False
 
-    def _jpeg_stats(self, x):
-        gray   = x.mean(dim=1, keepdim=True)                         # (B,1,H,W)
-        iscale = gray.flatten(1).std(dim=1, keepdim=True) + 1e-6     # (B,1)
-
-        def lg_h(k):  # mean |row gradient at lag k|
-            return (gray[:, :, k:, :] - gray[:, :, :-k, :]).abs().flatten(1).mean(1, keepdim=True)
-
-        def lg_v(k):  # mean |col gradient at lag k|
-            return (gray[:, :, :, k:] - gray[:, :, :, :-k]).abs().flatten(1).mean(1, keepdim=True)
-
-        g1h,  g4h,  g7h,  g8h,  g9h  = lg_h(1), lg_h(4), lg_h(7), lg_h(8), lg_h(9)
-        g1v,  g7v,  g8v,  g9v         = lg_v(1), lg_v(7), lg_v(8), lg_v(9)
-
-        # JPEG blocking = local peak at lag-8 in gradient spectrum.
-        # Shift-invariant: works regardless of crop offset into the 8-pixel grid.
-        # Pure noise/clean: ratio ≈ 1.  Strong blocking: ratio >> 1.
-        peak_h = g8h / ((g7h + g9h) * 0.5 + 1e-6)
-        peak_v = g8v / ((g7v + g9v) * 0.5 + 1e-6)
-
-        # Supporting ratios (all dimensionless — no iscale needed)
-        r8_1h  = g8h / (g1h + 1e-6)   # blocking vs overall roughness
-        r8_4h  = g8h / (g4h + 1e-6)   # 8-pixel period dominance over 4-pixel
-        r1h_1v = g1h / (g1v + 1e-6)   # H/V gradient asymmetry (artifact anisotropy)
-
-        # Absolute magnitudes — normalised by image contrast
-        scaled = torch.cat([g1h, g4h, g8h, g1v, g8v], dim=1) / iscale  # (B,5)
-        ratios = torch.cat([peak_h, peak_v, r8_1h, r8_4h, r1h_1v], dim=1)   # (B,5)
-
-        return torch.cat([scaled, ratios], dim=1)   # (B,10)
+        self.severity_head = _make_head(1280, dropout_rate)
 
     def unfreeze_backbone(self):
-        pass
+        for p in self.features.parameters():
+            p.requires_grad = True
+        print(f"[{self.deg_type}] Full backbone unfreeze — all EfficientNet-B0 layers")
 
     def forward(self, x):
-        return self.mlp(self._jpeg_stats(x))
+        return self.severity_head(self.avgpool(self.features(x)).flatten(1))
 
     def predict_severity(self, x):
         self.eval()

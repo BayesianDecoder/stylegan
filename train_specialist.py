@@ -51,12 +51,13 @@ TYPE_CFG = {
         epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
         use_class_weights=True, label_smoothing=0.03,
     ),
-    # deartifact: statistics-only MLP (lag-gradient periodicity at lag-8).
-    # No backbone — EfficientNet trained to ignore JPEG artifacts as corruption.
-    # Shift-invariant peak_h/v features work regardless of RandomCrop offset.
+    # deartifact: EfficientNet-B0, full backbone unfreeze at Phase B.
+    # Statistics-only failed (33% val — block period ≠ 8px after resize).
+    # CNN reached 62% even frozen. Bottleneck was lr_finetune=2e-5.
+    # At 1e-4 the early conv layers can re-learn JPEG-sensitive filters fast.
     "deartifact": dict(
-        lr_head=3e-4, lr_finetune=0, phase_b=999,
-        epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
+        lr_head=3e-4, lr_finetune=1e-4, phase_b=2,
+        epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=False,
         use_class_weights=True, label_smoothing=0.03,
     ),
     # inpaint: EfficientNet-B2 full backbone unfreeze — mask spatial extent
@@ -255,7 +256,7 @@ def _backbone_name(deg_type):
     names = {
         "upsample":   "MobileNetV3-Small",
         "denoise":    "Statistics MLP (no backbone)",
-        "deartifact": "Statistics MLP (shift-invariant lag-8 gradient)",
+        "deartifact": "EfficientNet-B0 (full unfreeze at Phase B, lr=1e-4)",
         "inpaint":    "EfficientNet-B2 (full unfreeze at Phase B)",
     }
     return names[deg_type]
