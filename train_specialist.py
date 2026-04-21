@@ -53,7 +53,7 @@ TYPE_CFG = {
     # Statistics MLP had zero signal (JPEG artifacts are spatially structured,
     # not globally uniform — global stats compress away the block pattern info).
     "deartifact": dict(
-        lr_head=3e-4, lr_finetune=1e-5, phase_b=5,
+        lr_head=3e-4, lr_finetune=3e-5, phase_b=5,
         epochs=60,  patience=12, mixup_alpha=0.0, skip_phase_b=False,
     ),
     # inpaint: EfficientNet-B2 full backbone unfreeze — mask spatial extent
