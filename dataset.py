@@ -354,18 +354,47 @@ class SpecialistDataset(Dataset):
             std=[0.229, 0.224, 0.225]
         )
         if self.type_idx == TYPES.index('deartifact'):
-            # JPEG artifacts live on 8x8 boundaries; keep the full 256 frame so
-            # we do not drop edge blocks or introduce crop-phase randomness.
+            # Keep the full 256×256 frame — no crop so 8-pixel block grid stays aligned.
+            # Strong augmentation for train: rotation and colour jitter prevent the
+            # model memorising face identity → quality-level associations, forcing it
+            # to learn the actual frequency/blocking features.
             if split == 'train':
                 self.transform = transforms.Compose([
                     transforms.Resize((256, 256)),
                     transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.RandomVerticalFlip(p=0.2),
+                    transforms.RandomRotation(degrees=15),
+                    transforms.ColorJitter(brightness=0.3, contrast=0.3,
+                                           saturation=0.1, hue=0.02),
+                    transforms.RandomGrayscale(p=0.1),
                     transforms.ToTensor(),
                     normalize,
                 ])
             else:
                 self.transform = transforms.Compose([
                     transforms.Resize((256, 256)),
+                    transforms.ToTensor(),
+                    normalize,
+                ])
+        elif self.type_idx == TYPES.index('inpaint'):
+            # Strong augmentation for inpaint too — mask coverage (not position)
+            # is the severity signal; rotation/flip diversify mask position without
+            # changing coverage, preventing spatial memorisation.
+            if split == 'train':
+                self.transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.RandomCrop(224),
+                    transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.RandomVerticalFlip(p=0.3),
+                    transforms.RandomRotation(degrees=10),
+                    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
+                    transforms.ToTensor(),
+                    normalize,
+                ])
+            else:
+                self.transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.CenterCrop(224),
                     transforms.ToTensor(),
                     normalize,
                 ])
