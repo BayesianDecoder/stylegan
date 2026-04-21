@@ -49,15 +49,18 @@ TYPE_CFG = {
         lr_head=3e-4, lr_finetune=0, phase_b=999,
         epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
     ),
-    # deartifact: low mixup — mixing JPEG images creates unrealistic artifacts
+    # deartifact: NO mixup — mixing JPEG images creates unrealistic artifact
+    # patterns that don't exist in val set, same distribution-shift problem
+    # as denoise. EfficientNet-B0 can detect blocking artifacts visually.
     "deartifact": dict(
         lr_head=3e-4, lr_finetune=1e-5, phase_b=8,
-        epochs=50,  patience=10, mixup_alpha=0.1, skip_phase_b=False,
+        epochs=60,  patience=12, mixup_alpha=0.0, skip_phase_b=False,
     ),
-    # inpaint: low mixup — mixing masked images confuses spatial extent signal
+    # inpaint: NO mixup + 2 blocks unfreeze. Mask extent is spatial —
+    # 1 block not enough for backbone to learn mask-size features.
     "inpaint": dict(
-        lr_head=3e-4, lr_finetune=1e-5, phase_b=8,
-        epochs=50,  patience=10, mixup_alpha=0.1, skip_phase_b=False,
+        lr_head=3e-4, lr_finetune=5e-6, phase_b=8,
+        epochs=60,  patience=12, mixup_alpha=0.0, skip_phase_b=False,
     ),
 }
 

@@ -259,8 +259,11 @@ class EfficientNetSpecialist(nn.Module):
         self.severity_head = _make_head(feat_dim, dropout_rate)
 
     def unfreeze_backbone(self):
-        _partial_unfreeze(self.features, n_blocks_to_unfreeze=3)
-        print(f"[{self.deg_type}] Partial unfreeze — last 3 EfficientNet-{self.variant} blocks")
+        # inpaint needs 2 blocks (spatial mask extent needs more adaptation)
+        # deartifact only needs 1 block (blocking artifacts are local patterns)
+        n = 2 if self.deg_type == "inpaint" else 1
+        _partial_unfreeze(self.features, n_blocks_to_unfreeze=n)
+        print(f"[{self.deg_type}] Partial unfreeze — last {n} EfficientNet-{self.variant} blocks")
 
     def forward(self, x):
         feat = self.avgpool(self.features(x)).flatten(1)
