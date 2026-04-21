@@ -224,50 +224,109 @@ class DenoiseSpecialist(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EfficientNetSpecialist — B0 for deartifact, B2 for inpaint
+# DeartifactSpecialist — statistics-only MLP with 8×8 block boundary features
 #
-# deartifact: EfficientNet-B0 is much better than MobileNetV3 at capturing
-#   blocking/ringing artifacts (texture-frequency sensitivity).
-# inpaint: EfficientNet-B2 has a larger receptive field — needed to detect
-#   the spatial extent of inpainting masks (small=XS vs large=XL).
+# Same conclusion as denoise: frozen EfficientNet suppresses JPEG artifact
+# signals (ImageNet training optimises away frequency artefacts as noise).
+# JPEG artifacts live in 8×8 block boundaries and ringing patterns — directly
+# measurable with block residuals and boundary discontinuity statistics.
 # ─────────────────────────────────────────────────────────────────────────────
 
-class EfficientNetSpecialist(nn.Module):
+class DeartifactSpecialist(nn.Module):
 
-    _FEAT_DIM = {"b0": 1280, "b2": 1408}
-
-    def __init__(self, deg_type, variant="b0", dropout_rate=0.45, freeze_backbone=True):
+    def __init__(self, deg_type="deartifact", dropout_rate=0.3, freeze_backbone=True):
         super().__init__()
         self.deg_type = deg_type
-        self.variant  = variant
+        lap = torch.tensor([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]])
+        self.register_buffer("_lap", lap.view(1, 1, 3, 3))
 
-        if variant == "b0":
-            backbone = models.efficientnet_b0(weights='DEFAULT')
-        elif variant == "b2":
-            backbone = models.efficientnet_b2(weights='DEFAULT')
-        else:
-            raise ValueError(f"Unknown variant {variant}")
+        # 9 artifact statistics → MLP
+        self.mlp = nn.Sequential(
+            nn.Linear(9, 256), nn.ReLU(), nn.Dropout(dropout_rate),
+            nn.Linear(256, 128), nn.ReLU(), nn.Dropout(dropout_rate * 0.5),
+            nn.Linear(128, 5),
+        )
 
+    def _artifact_stats(self, x):
+        gray    = x.mean(dim=1, keepdim=True)
+        img_std = gray.flatten(1).std(dim=1, keepdim=True) + 1e-6
+
+        # 8×8 block residual — core JPEG blocking signal
+        blk     = F.avg_pool2d(gray, 8, stride=8)
+        blk_up  = F.interpolate(blk, size=gray.shape[2:], mode='nearest')
+        resid   = (gray - blk_up).abs()
+        br_mu   = resid.flatten(1).mean(dim=1, keepdim=True)
+        br_std  = resid.flatten(1).std(dim=1, keepdim=True)
+
+        # Boundary discontinuities at 8-pixel intervals (JPEG block edges)
+        h_diff  = (gray[:, :, :, 8:] - gray[:, :, :, :-8]).abs()
+        v_diff  = (gray[:, :, 8:, :] - gray[:, :, :-8, :]).abs()
+        h_mu    = h_diff.flatten(1).mean(dim=1, keepdim=True)
+        v_mu    = v_diff.flatten(1).mean(dim=1, keepdim=True)
+
+        # Ringing: Laplacian HF energy (increases with artifact severity)
+        lap_std = F.conv2d(gray, self._lap, padding=1).flatten(1).std(dim=1, keepdim=True)
+
+        # Multi-scale: at 2× down, 8px blocks → 4px — separates blocks from content
+        gray2   = F.avg_pool2d(gray, 2)
+        blk2    = F.avg_pool2d(gray2, 4, stride=4)
+        blk2_up = F.interpolate(blk2, size=gray2.shape[2:], mode='nearest')
+        br2_mu  = (gray2 - blk2_up).abs().flatten(1).mean(dim=1, keepdim=True)
+        lap2_std = F.conv2d(gray2, self._lap, padding=1).flatten(1).std(dim=1, keepdim=True)
+
+        # Block edge sharpness ratio (sharp block edges = more artifacts)
+        sharp   = (h_mu + v_mu) / (br_mu + 1e-6)
+
+        stats = torch.cat([br_mu, br_std, h_mu, v_mu, lap_std,
+                           br2_mu, lap2_std, sharp,
+                           gray.flatten(1).std(dim=1, keepdim=True)], dim=1)  # (B,9)
+        return stats / img_std
+
+    def unfreeze_backbone(self):
+        pass  # no backbone
+
+    def forward(self, x):
+        return self.mlp(self._artifact_stats(x))
+
+    def predict_severity(self, x):
+        self.eval()
+        with torch.no_grad():
+            probs = torch.softmax(self.forward(x)[0], dim=0)
+            return LEVELS[probs.argmax().item()], probs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# InpaintSpecialist — EfficientNet-B2, full backbone fine-tune from Phase B
+#
+# Inpaint severity = mask spatial extent (XS=tiny, XL=huge).
+# Statistics lose spatial information so backbone IS needed here.
+# Full backbone unfreeze at Phase B with low LR forces the model to learn
+# mask-extent features while ImageNet pretraining provides a useful warm start.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class InpaintSpecialist(nn.Module):
+
+    def __init__(self, deg_type="inpaint", dropout_rate=0.45, freeze_backbone=True):
+        super().__init__()
+        self.deg_type = deg_type
+        backbone      = models.efficientnet_b2(weights='DEFAULT')
         self.features = backbone.features
         self.avgpool  = nn.AdaptiveAvgPool2d(1)
-        feat_dim      = self._FEAT_DIM[variant]
 
         if freeze_backbone:
             for p in self.features.parameters():
                 p.requires_grad = False
 
-        self.severity_head = _make_head(feat_dim, dropout_rate)
+        self.severity_head = _make_head(1408, dropout_rate)
 
     def unfreeze_backbone(self):
-        # inpaint needs 2 blocks (spatial mask extent needs more adaptation)
-        # deartifact only needs 1 block (blocking artifacts are local patterns)
-        n = 2 if self.deg_type == "inpaint" else 1
-        _partial_unfreeze(self.features, n_blocks_to_unfreeze=n)
-        print(f"[{self.deg_type}] Partial unfreeze — last {n} EfficientNet-{self.variant} blocks")
+        # Unfreeze ALL layers — mask extent needs full spatial feature adaptation
+        for p in self.features.parameters():
+            p.requires_grad = True
+        print(f"[{self.deg_type}] Full backbone unfreeze — all EfficientNet-B2 layers")
 
     def forward(self, x):
-        feat = self.avgpool(self.features(x)).flatten(1)
-        return self.severity_head(feat)
+        return self.severity_head(self.avgpool(self.features(x)).flatten(1))
 
     def predict_severity(self, x):
         self.eval()
@@ -283,13 +342,13 @@ class EfficientNetSpecialist(nn.Module):
 def build_specialist(deg_type, freeze_backbone=True):
     """Returns the best specialist model for each degradation type."""
     if deg_type == "upsample":
-        return SeveritySpecialist(deg_type, dropout_rate=0.4,  freeze_backbone=freeze_backbone)
+        return SeveritySpecialist(deg_type,   dropout_rate=0.4,  freeze_backbone=freeze_backbone)
     elif deg_type == "denoise":
-        return DenoiseSpecialist(deg_type,  dropout_rate=0.5,  freeze_backbone=freeze_backbone)
+        return DenoiseSpecialist(deg_type,    dropout_rate=0.3,  freeze_backbone=freeze_backbone)
     elif deg_type == "deartifact":
-        return EfficientNetSpecialist(deg_type, variant="b0", dropout_rate=0.45, freeze_backbone=freeze_backbone)
+        return DeartifactSpecialist(deg_type, dropout_rate=0.3,  freeze_backbone=freeze_backbone)
     elif deg_type == "inpaint":
-        return EfficientNetSpecialist(deg_type, variant="b2", dropout_rate=0.45, freeze_backbone=freeze_backbone)
+        return InpaintSpecialist(deg_type,    dropout_rate=0.45, freeze_backbone=freeze_backbone)
     else:
         raise ValueError(f"Unknown deg_type: {deg_type}")
 

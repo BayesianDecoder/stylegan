@@ -49,17 +49,17 @@ TYPE_CFG = {
         lr_head=3e-4, lr_finetune=0, phase_b=999,
         epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
     ),
-    # deartifact: NO mixup — mixing JPEG images creates unrealistic artifact
-    # patterns that don't exist in val set, same distribution-shift problem
-    # as denoise. EfficientNet-B0 can detect blocking artifacts visually.
+    # deartifact: statistics MLP (same reasoning as denoise — frozen backbone
+    # suppresses JPEG artifact signals). No Phase B needed, no backbone.
     "deartifact": dict(
-        lr_head=3e-4, lr_finetune=1e-5, phase_b=8,
-        epochs=60,  patience=12, mixup_alpha=0.0, skip_phase_b=False,
+        lr_head=3e-4, lr_finetune=0, phase_b=999,
+        epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
     ),
-    # inpaint: NO mixup + 2 blocks unfreeze. Mask extent is spatial —
-    # 1 block not enough for backbone to learn mask-size features.
+    # inpaint: EfficientNet-B2 full backbone unfreeze — mask spatial extent
+    # requires spatial features, statistics compress away spatial info.
+    # Full unfreeze at Phase B with low LR forces mask-size feature learning.
     "inpaint": dict(
-        lr_head=3e-4, lr_finetune=5e-6, phase_b=8,
+        lr_head=3e-4, lr_finetune=1e-5, phase_b=5,
         epochs=60,  patience=12, mixup_alpha=0.0, skip_phase_b=False,
     ),
 }
@@ -226,9 +226,9 @@ def train_one_specialist(deg_type, data_dir, save_dir,
 def _backbone_name(deg_type):
     names = {
         "upsample":   "MobileNetV3-Small",
-        "denoise":    "EfficientNet-B0 + Laplacian branch",
-        "deartifact": "EfficientNet-B0",
-        "inpaint":    "EfficientNet-B2",
+        "denoise":    "Statistics MLP (no backbone)",
+        "deartifact": "Statistics MLP (8x8 block features)",
+        "inpaint":    "EfficientNet-B2 (full unfreeze at Phase B)",
     }
     return names[deg_type]
 
