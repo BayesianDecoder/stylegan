@@ -17,7 +17,6 @@ pretrained_networks/
 **/pretrained_networks/
 specialists/
 **/specialists/
-datasets/
 robust-unsupervised-clean/
 .DS_Store
 .vscode/
