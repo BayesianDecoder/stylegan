@@ -40,22 +40,23 @@ TYPE_CFG = {
     # upsample already works — light training
     "upsample": dict(
         lr_head=5e-4, lr_finetune=3e-5, phase_b=5,
-        epochs=30,  patience=7,  mixup_alpha=0.2,
+        epochs=30,  patience=7,  mixup_alpha=0.2, skip_phase_b=False,
     ),
-    # denoise: very aggressive regularisation, low fine-tune LR, late unfreeze
+    # denoise: Laplacian branch provides explicit noise signal — backbone
+    # fine-tuning not needed and wastes time; head-only training is enough.
     "denoise": dict(
-        lr_head=3e-4, lr_finetune=5e-6, phase_b=10,
-        epochs=60,  patience=12, mixup_alpha=0.4,
+        lr_head=3e-4, lr_finetune=5e-6, phase_b=999,
+        epochs=40,  patience=10, mixup_alpha=0.4, skip_phase_b=True,
     ),
-    # deartifact: moderate
+    # deartifact: unfreeze only last 1 block — faster, avoids overfitting
     "deartifact": dict(
         lr_head=3e-4, lr_finetune=1e-5, phase_b=8,
-        epochs=50,  patience=10, mixup_alpha=0.3,
+        epochs=50,  patience=10, mixup_alpha=0.3, skip_phase_b=False,
     ),
-    # inpaint: moderate, B2 needs more time to converge
+    # inpaint: unfreeze only last 1 block — faster convergence
     "inpaint": dict(
         lr_head=3e-4, lr_finetune=1e-5, phase_b=8,
-        epochs=50,  patience=10, mixup_alpha=0.3,
+        epochs=50,  patience=10, mixup_alpha=0.3, skip_phase_b=False,
     ),
 }
 
@@ -138,7 +139,8 @@ def train_one_specialist(deg_type, data_dir, save_dir,
     print(f"  backbone  : {_backbone_name(deg_type)}")
     print(f"  epochs    : {epochs}  patience: {patience}")
     print(f"  lr_head   : {cfg['lr_head']}  lr_finetune: {cfg['lr_finetune']}")
-    print(f"  phase_b   : epoch {cfg['phase_b']+1}  mixup_alpha: {cfg['mixup_alpha']}")
+    phase_b_label = "disabled" if cfg["skip_phase_b"] else f"epoch {cfg['phase_b']+1}"
+    print(f"  phase_b   : {phase_b_label}  mixup_alpha: {cfg['mixup_alpha']}")
     print(f"{'='*65}")
 
     type_idx = TYPES.index(deg_type)
@@ -155,7 +157,7 @@ def train_one_specialist(deg_type, data_dir, save_dir,
         lr=cfg["lr_head"], weight_decay=1e-3
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=cfg["phase_b"], eta_min=1e-5
+        optimizer, T_max=max(1, int(cfg["phase_b"])), eta_min=1e-5
     )
 
     best_val_loss    = float('inf')
@@ -164,15 +166,15 @@ def train_one_specialist(deg_type, data_dir, save_dir,
 
     for epoch in range(1, epochs + 1):
 
-        # ── Switch to Phase B ───────────────────────────────────────────────
-        if epoch == cfg["phase_b"] + 1:
+        # ── Switch to Phase B (skipped for denoise) ────────────────────────
+        if not cfg["skip_phase_b"] and epoch == cfg["phase_b"] + 1:
             model.unfreeze_backbone()
             optimizer = torch.optim.AdamW(
                 model.parameters(),
                 lr=cfg["lr_finetune"], weight_decay=1e-3
             )
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=epochs - cfg["phase_b"], eta_min=1e-7
+                optimizer, T_max=max(1, epochs - int(cfg["phase_b"])), eta_min=1e-7
             )
             print(f"  Phase B — partial fine-tune at lr={cfg['lr_finetune']}")
 

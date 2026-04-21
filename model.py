@@ -77,7 +77,7 @@ def _make_head(in_dim, dropout):
     )
 
 
-def _partial_unfreeze(features, n_blocks_to_unfreeze=3):
+def _partial_unfreeze(features, n_blocks_to_unfreeze=1):
     """Freeze all blocks then unfreeze the last n — prevents destroying early features."""
     for p in features.parameters():
         p.requires_grad = False
