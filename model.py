@@ -224,69 +224,37 @@ class DenoiseSpecialist(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DeartifactSpecialist — statistics-only MLP with 8×8 block boundary features
+# DeartifactSpecialist — EfficientNet-B0 with full backbone unfreeze
 #
-# Same conclusion as denoise: frozen EfficientNet suppresses JPEG artifact
-# signals (ImageNet training optimises away frequency artefacts as noise).
-# JPEG artifacts live in 8×8 block boundaries and ringing patterns — directly
-# measurable with block residuals and boundary discontinuity statistics.
+# Statistics MLPs fail here: JPEG artifacts are spatially structured (block
+# patterns depend on local image content), so global statistics have ~0 signal.
+# EfficientNet-B0 CAN detect blocking/ringing visually, but the frozen backbone
+# interprets artifacts as texture. Full unfreeze at Phase B forces the backbone
+# to learn artifact-sensitive features instead.
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DeartifactSpecialist(nn.Module):
 
-    def __init__(self, deg_type="deartifact", dropout_rate=0.3, freeze_backbone=True):
+    def __init__(self, deg_type="deartifact", dropout_rate=0.45, freeze_backbone=True):
         super().__init__()
         self.deg_type = deg_type
-        lap = torch.tensor([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]])
-        self.register_buffer("_lap", lap.view(1, 1, 3, 3))
+        backbone      = models.efficientnet_b0(weights='DEFAULT')
+        self.features = backbone.features
+        self.avgpool  = nn.AdaptiveAvgPool2d(1)
 
-        # 9 artifact statistics → MLP
-        self.mlp = nn.Sequential(
-            nn.Linear(9, 256), nn.ReLU(), nn.Dropout(dropout_rate),
-            nn.Linear(256, 128), nn.ReLU(), nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(128, 5),
-        )
+        if freeze_backbone:
+            for p in self.features.parameters():
+                p.requires_grad = False
 
-    def _artifact_stats(self, x):
-        gray    = x.mean(dim=1, keepdim=True)
-        img_std = gray.flatten(1).std(dim=1, keepdim=True) + 1e-6
-
-        # 8×8 block residual — core JPEG blocking signal
-        blk     = F.avg_pool2d(gray, 8, stride=8)
-        blk_up  = F.interpolate(blk, size=gray.shape[2:], mode='nearest')
-        resid   = (gray - blk_up).abs()
-        br_mu   = resid.flatten(1).mean(dim=1, keepdim=True)
-        br_std  = resid.flatten(1).std(dim=1, keepdim=True)
-
-        # Boundary discontinuities at 8-pixel intervals (JPEG block edges)
-        h_diff  = (gray[:, :, :, 8:] - gray[:, :, :, :-8]).abs()
-        v_diff  = (gray[:, :, 8:, :] - gray[:, :, :-8, :]).abs()
-        h_mu    = h_diff.flatten(1).mean(dim=1, keepdim=True)
-        v_mu    = v_diff.flatten(1).mean(dim=1, keepdim=True)
-
-        # Ringing: Laplacian HF energy (increases with artifact severity)
-        lap_std = F.conv2d(gray, self._lap, padding=1).flatten(1).std(dim=1, keepdim=True)
-
-        # Multi-scale: at 2× down, 8px blocks → 4px — separates blocks from content
-        gray2   = F.avg_pool2d(gray, 2)
-        blk2    = F.avg_pool2d(gray2, 4, stride=4)
-        blk2_up = F.interpolate(blk2, size=gray2.shape[2:], mode='nearest')
-        br2_mu  = (gray2 - blk2_up).abs().flatten(1).mean(dim=1, keepdim=True)
-        lap2_std = F.conv2d(gray2, self._lap, padding=1).flatten(1).std(dim=1, keepdim=True)
-
-        # Block edge sharpness ratio (sharp block edges = more artifacts)
-        sharp   = (h_mu + v_mu) / (br_mu + 1e-6)
-
-        stats = torch.cat([br_mu, br_std, h_mu, v_mu, lap_std,
-                           br2_mu, lap2_std, sharp,
-                           gray.flatten(1).std(dim=1, keepdim=True)], dim=1)  # (B,9)
-        return stats / img_std
+        self.severity_head = _make_head(1280, dropout_rate)
 
     def unfreeze_backbone(self):
-        pass  # no backbone
+        for p in self.features.parameters():
+            p.requires_grad = True
+        print(f"[{self.deg_type}] Full backbone unfreeze — all EfficientNet-B0 layers")
 
     def forward(self, x):
-        return self.mlp(self._artifact_stats(x))
+        return self.severity_head(self.avgpool(self.features(x)).flatten(1))
 
     def predict_severity(self, x):
         self.eval()

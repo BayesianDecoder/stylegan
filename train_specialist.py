@@ -49,11 +49,12 @@ TYPE_CFG = {
         lr_head=3e-4, lr_finetune=0, phase_b=999,
         epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
     ),
-    # deartifact: statistics MLP (same reasoning as denoise — frozen backbone
-    # suppresses JPEG artifact signals). No Phase B needed, no backbone.
+    # deartifact: EfficientNet-B0 full backbone unfreeze at Phase B.
+    # Statistics MLP had zero signal (JPEG artifacts are spatially structured,
+    # not globally uniform — global stats compress away the block pattern info).
     "deartifact": dict(
-        lr_head=3e-4, lr_finetune=0, phase_b=999,
-        epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
+        lr_head=3e-4, lr_finetune=1e-5, phase_b=5,
+        epochs=60,  patience=12, mixup_alpha=0.0, skip_phase_b=False,
     ),
     # inpaint: EfficientNet-B2 full backbone unfreeze — mask spatial extent
     # requires spatial features, statistics compress away spatial info.
