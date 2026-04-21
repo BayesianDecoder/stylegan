@@ -328,27 +328,28 @@ class SpecialistDataset(Dataset):
  
         self.df = self.df.reset_index(drop=True)
  
-        # Severity-safe augmentation:
-        # Only flip and crop — NO ColorJitter which destroys noise/blur signals
+        # Both train and val use the same Resize(256)→CenterCrop(224) path so
+        # noise statistics are at identical scale. Previously val used
+        # Resize(224) directly which gave ~15% less noise than train images
+        # at the same severity label — causing statistics MLP to fail on val.
+        normalize = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
         if split == 'train':
             self.transform = transforms.Compose([
                 transforms.Resize((256, 256)),
-                transforms.CenterCrop(224),
+                transforms.RandomCrop(224),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                ),
+                normalize,
             ])
         else:
             self.transform = transforms.Compose([
-                transforms.Resize((224, 224)),
+                transforms.Resize((256, 256)),
+                transforms.CenterCrop(224),   # same resize ratio as train
                 transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                ),
+                normalize,
             ])
  
     def __len__(self):

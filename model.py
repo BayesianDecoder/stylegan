@@ -174,41 +174,41 @@ class DenoiseSpecialist(nn.Module):
         )
 
     def _noise_stats(self, x):
-        gray = x.mean(dim=1, keepdim=True)          # (B,1,H,W)
+        gray     = x.mean(dim=1, keepdim=True)                      # (B,1,H,W)
+        img_std  = gray.flatten(1).std(dim=1, keepdim=True) + 1e-6  # (B,1) global scale
 
-        # 3-scale Laplacian std — noise averages out at lower scales but
-        # edges persist, so scale ratio isolates noise contribution
         def lap_std(g):
             return F.conv2d(g, self._lap, padding=1).flatten(1).std(dim=1, keepdim=True)
 
-        s1 = lap_std(gray)                               # full scale
-        s2 = lap_std(F.avg_pool2d(gray, 2))              # 2× down
-        s4 = lap_std(F.avg_pool2d(gray, 4))              # 4× down
-        # ratio s1/s4: if mostly noise, ratio ≈ 4; if edges, ratio ≈ 1
+        s1    = lap_std(gray)
+        s2    = lap_std(F.avg_pool2d(gray, 2))
+        s4    = lap_std(F.avg_pool2d(gray, 4))
+        # ratio isolates noise vs edges; s1/s4 ≈ 4 for pure noise, ≈ 1 for edges
         ratio = s1 / (s4 + 1e-6)
 
-        # Sobel gradient magnitude
-        gx      = F.conv2d(gray, self._sx, padding=1)
-        gy      = F.conv2d(gray, self._sy, padding=1)
-        grad    = (gx ** 2 + gy ** 2).sqrt()
-        g_mu    = grad.flatten(1).mean(dim=1, keepdim=True)
-        g_std   = grad.flatten(1).std(dim=1, keepdim=True)
+        gx    = F.conv2d(gray, self._sx, padding=1)
+        gy    = F.conv2d(gray, self._sy, padding=1)
+        grad  = (gx ** 2 + gy ** 2).sqrt()
+        g_mu  = grad.flatten(1).mean(dim=1, keepdim=True)
+        g_std = grad.flatten(1).std(dim=1, keepdim=True)
 
-        # Local residual variance (noise in smooth regions)
-        lmu     = F.avg_pool2d(gray, 8, stride=4, padding=2)
-        lmu_up  = F.interpolate(lmu, size=gray.shape[2:], mode='nearest')
-        resid   = (gray - lmu_up) ** 2
-        lv_mu   = resid.flatten(1).mean(dim=1, keepdim=True)
-        lv_std  = resid.flatten(1).std(dim=1, keepdim=True)
+        lmu    = F.avg_pool2d(gray, 8, stride=4, padding=2)
+        lmu_up = F.interpolate(lmu, size=gray.shape[2:], mode='nearest')
+        resid  = (gray - lmu_up) ** 2
+        lv_mu  = resid.flatten(1).mean(dim=1, keepdim=True)
+        lv_std = resid.flatten(1).std(dim=1, keepdim=True)
 
-        # High-frequency energy
-        blur    = F.avg_pool2d(gray, 5, stride=1, padding=2)
-        hf      = (gray - blur).abs()
-        hf_mu   = hf.flatten(1).mean(dim=1, keepdim=True)
-        hf_std  = hf.flatten(1).std(dim=1, keepdim=True)
+        blur   = F.avg_pool2d(gray, 5, stride=1, padding=2)
+        hf     = (gray - blur).abs()
+        hf_mu  = hf.flatten(1).mean(dim=1, keepdim=True)
+        hf_std = hf.flatten(1).std(dim=1, keepdim=True)
 
-        return torch.cat([s1, s2, s4, ratio, g_mu, g_std,
-                          lv_mu, lv_std, hf_mu, hf_std], dim=1)  # (B, 10)
+        # Normalise by image global std → scale-invariant statistics.
+        # Removes the ~15% noise level difference caused by Resize(256)→crop
+        # vs Resize(224) in different dataset splits.
+        stats = torch.cat([s1, s2, s4, ratio, g_mu, g_std,
+                           lv_mu, lv_std, hf_mu, hf_std], dim=1)   # (B, 10)
+        return stats / img_std
 
     def unfreeze_backbone(self):
         pass
