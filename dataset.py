@@ -353,21 +353,38 @@ class SpecialistDataset(Dataset):
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225]
         )
-        if split == 'train':
-            self.transform = transforms.Compose([
-                transforms.Resize((256, 256)),
-                transforms.RandomCrop(224),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.ToTensor(),
-                normalize,
-            ])
+        if self.type_idx == TYPES.index('deartifact'):
+            # JPEG artifacts live on 8x8 boundaries; keep the full 256 frame so
+            # we do not drop edge blocks or introduce crop-phase randomness.
+            if split == 'train':
+                self.transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.ToTensor(),
+                    normalize,
+                ])
+            else:
+                self.transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.ToTensor(),
+                    normalize,
+                ])
         else:
-            self.transform = transforms.Compose([
-                transforms.Resize((256, 256)),
-                transforms.CenterCrop(224),   # same resize ratio as train
-                transforms.ToTensor(),
-                normalize,
-            ])
+            if split == 'train':
+                self.transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.RandomCrop(224),
+                    transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.ToTensor(),
+                    normalize,
+                ])
+            else:
+                self.transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.CenterCrop(224),   # same resize ratio as train
+                    transforms.ToTensor(),
+                    normalize,
+                ])
  
     def __len__(self):
         return len(self.df)

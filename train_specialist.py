@@ -53,8 +53,8 @@ TYPE_CFG = {
     ),
     # deartifact: EfficientNet-B0 full backbone unfreeze at Phase B.
     "deartifact": dict(
-        lr_head=3e-4, lr_finetune=1e-5, phase_b=5,
-        epochs=70,  patience=15, mixup_alpha=0.0, skip_phase_b=False,
+        lr_head=2e-4, lr_finetune=2e-5, phase_b=3,
+        epochs=90,  patience=20, mixup_alpha=0.0, skip_phase_b=False,
         use_class_weights=False, label_smoothing=0.0,
     ),
     # inpaint: EfficientNet-B2 full backbone unfreeze — mask spatial extent
