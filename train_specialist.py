@@ -51,18 +51,20 @@ TYPE_CFG = {
         epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
         use_class_weights=True, label_smoothing=0.03,
     ),
-    # deartifact: EfficientNet-B0 full backbone unfreeze at Phase B.
+    # deartifact: statistics-only MLP (lag-gradient periodicity at lag-8).
+    # No backbone — EfficientNet trained to ignore JPEG artifacts as corruption.
+    # Shift-invariant peak_h/v features work regardless of RandomCrop offset.
     "deartifact": dict(
-        lr_head=2e-4, lr_finetune=2e-5, phase_b=3,
-        epochs=90,  patience=20, mixup_alpha=0.0, skip_phase_b=False,
-        use_class_weights=False, label_smoothing=0.0,
+        lr_head=3e-4, lr_finetune=0, phase_b=999,
+        epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
+        use_class_weights=True, label_smoothing=0.03,
     ),
     # inpaint: EfficientNet-B2 full backbone unfreeze — mask spatial extent
-    # requires spatial features, statistics compress away spatial info.
-    # Full unfreeze at Phase B with low LR forces mask-size feature learning.
+    # requires spatial features. Raised lr_finetune 1e-5→1e-4 (was underfitting:
+    # train/val gap only 6% at 62% — backbone not adapting fast enough).
     "inpaint": dict(
-        lr_head=3e-4, lr_finetune=1e-5, phase_b=5,
-        epochs=60,  patience=12, mixup_alpha=0.0, skip_phase_b=False,
+        lr_head=3e-4, lr_finetune=1e-4, phase_b=3,
+        epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=False,
         use_class_weights=True, label_smoothing=0.03,
     ),
 }
@@ -253,7 +255,7 @@ def _backbone_name(deg_type):
     names = {
         "upsample":   "MobileNetV3-Small",
         "denoise":    "Statistics MLP (no backbone)",
-        "deartifact": "EfficientNet-B0 (full unfreeze at Phase B)",
+        "deartifact": "Statistics MLP (shift-invariant lag-8 gradient)",
         "inpaint":    "EfficientNet-B2 (full unfreeze at Phase B)",
     }
     return names[deg_type]
