@@ -237,9 +237,9 @@ class DenoiseSpecialist(nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DeartifactSpecialist(nn.Module):
-    """EfficientNet-B0 specialist — full backbone unfreeze at Phase B with lr=1e-4."""
+    """EfficientNet-B0 specialist — partial unfreeze (last 4 blocks) at Phase B."""
 
-    def __init__(self, deg_type="deartifact", dropout_rate=0.35, freeze_backbone=True):
+    def __init__(self, deg_type="deartifact", dropout_rate=0.5, freeze_backbone=True):
         super().__init__()
         self.deg_type = deg_type
         backbone      = models.efficientnet_b0(weights='DEFAULT')
@@ -253,9 +253,11 @@ class DeartifactSpecialist(nn.Module):
         self.severity_head = _make_head(1280, dropout_rate)
 
     def unfreeze_backbone(self):
-        for p in self.features.parameters():
-            p.requires_grad = True
-        print(f"[{self.deg_type}] Full backbone unfreeze — all EfficientNet-B0 layers")
+        # Unfreeze only last 4 children of EfficientNet features (~30% of params).
+        # Keeps early edge/colour filters frozen — prevents overfitting on 10k images.
+        _partial_unfreeze(self.features, n_blocks_to_unfreeze=4)
+        n = sum(p.numel() for p in self.features.parameters() if p.requires_grad)
+        print(f"[{self.deg_type}] Partial unfreeze — last 4 blocks ({n:,} params)")
 
     def forward(self, x):
         return self.severity_head(self.avgpool(self.features(x)).flatten(1))

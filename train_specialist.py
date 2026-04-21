@@ -51,14 +51,14 @@ TYPE_CFG = {
         epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
         use_class_weights=True, label_smoothing=0.03,
     ),
-    # deartifact: EfficientNet-B0, full backbone unfreeze at Phase B.
-    # Statistics-only failed (33% val — block period ≠ 8px after resize).
-    # CNN reached 62% even frozen. Bottleneck was lr_finetune=2e-5.
-    # At 1e-4 the early conv layers can re-learn JPEG-sensitive filters fast.
+    # deartifact: EfficientNet-B0, partial unfreeze (last 4 blocks) at Phase B.
+    # lr=1e-4 overfits fast (5.3M params / 10k images). Fix: partial unfreeze
+    # (~30% params) + lower lr_finetune + strong WD + high label smoothing.
     "deartifact": dict(
-        lr_head=3e-4, lr_finetune=1e-4, phase_b=2,
+        lr_head=3e-4, lr_finetune=5e-5, phase_b=3,
         epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=False,
-        use_class_weights=True, label_smoothing=0.03,
+        use_class_weights=True, label_smoothing=0.1,
+        wd_finetune=5e-3,
     ),
     # inpaint: EfficientNet-B2 full backbone unfreeze — mask spatial extent
     # requires spatial features. Raised lr_finetune 1e-5→1e-4 (was underfitting:
@@ -192,7 +192,8 @@ def train_one_specialist(deg_type, data_dir, save_dir,
             model.unfreeze_backbone()
             optimizer = torch.optim.AdamW(
                 model.parameters(),
-                lr=cfg["lr_finetune"], weight_decay=1e-3
+                lr=cfg["lr_finetune"],
+                weight_decay=cfg.get("wd_finetune", 1e-3),
             )
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=max(1, epochs - int(cfg["phase_b"])), eta_min=1e-7
