@@ -1,71 +1,105 @@
 """
 train_specialist.py
 -------------------
-Trains all 4 severity specialist models — one per degradation type.
+Trains severity specialist models — best backbone per degradation type:
 
-WHY THIS EXISTS:
-    The main model (train.py) uses a shared severity head for all 4 types.
-    This reaches ~62% severity accuracy because the head must learn
-    subtle differences across all types simultaneously.
+  upsample   → MobileNetV3-Small   (already >90%, keep it)
+  denoise    → EfficientNet-B0 + Laplacian noise branch
+  deartifact → EfficientNet-B0     (better texture/frequency features)
+  inpaint    → EfficientNet-B2     (larger receptive field for mask detection)
 
-    Each specialist is trained on ONE type only — so it focuses entirely
-    on learning XS vs S vs M vs L vs XL for that specific degradation.
-    Expected improvement: ~62% → ~85%+ severity accuracy.
-
-HOW IT WORKS:
-    - Reuses the SAME 50,000 images you already generated
-    - Filters to 12,500 images per type using SpecialistDataset
-    - Trains 4 separate SeveritySpecialist models
-    - Saves each to specialists/ folder
+Key training improvements over v1:
+  - Mixup augmentation (alpha=0.3) — prevents memorisation
+  - Partial backbone unfreeze (last 3 blocks only) — avoids destroying early features
+  - Per-type LR / patience / dropout configs
+  - Gradient clipping (max_norm=1.0)
+  - More epochs + larger patience
 
 Usage:
-    # Train all 4 specialists (recommended — takes ~2 hours total on M3)
     python train_specialist.py --data_dir data_main/degraded --train_all
-
-    # Train just one specialist (e.g. denoise only)
     python train_specialist.py --data_dir data_main/degraded --type denoise
-
-After training, run evaluation:
-    python evaluate_specialist.py --data_dir data_main/degraded
 """
 
 import os
 import argparse
+import numpy as np
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-# Imports from your existing files — nothing changed in those files
 from dataset import get_specialist_dataloaders, TYPES, LEVELS
-from model import SeveritySpecialist
+from model   import build_specialist
 
 
-def train_one_epoch(model, loader, optimizer, device, loss_fn):
-    """One training epoch for a specialist. Returns avg loss and accuracy."""
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-type hyperparameters
+# ─────────────────────────────────────────────────────────────────────────────
+
+TYPE_CFG = {
+    # upsample already works — light training
+    "upsample": dict(
+        lr_head=5e-4, lr_finetune=3e-5, phase_b=5,
+        epochs=30,  patience=7,  mixup_alpha=0.2,
+    ),
+    # denoise: very aggressive regularisation, low fine-tune LR, late unfreeze
+    "denoise": dict(
+        lr_head=3e-4, lr_finetune=5e-6, phase_b=10,
+        epochs=60,  patience=12, mixup_alpha=0.4,
+    ),
+    # deartifact: moderate
+    "deartifact": dict(
+        lr_head=3e-4, lr_finetune=1e-5, phase_b=8,
+        epochs=50,  patience=10, mixup_alpha=0.3,
+    ),
+    # inpaint: moderate, B2 needs more time to converge
+    "inpaint": dict(
+        lr_head=3e-4, lr_finetune=1e-5, phase_b=8,
+        epochs=50,  patience=10, mixup_alpha=0.3,
+    ),
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mixup helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def mixup_batch(images, labels, alpha):
+    if alpha <= 0:
+        return images, labels, labels, 1.0
+    lam     = float(np.random.beta(alpha, alpha))
+    idx     = torch.randperm(images.size(0), device=images.device)
+    mixed   = lam * images + (1.0 - lam) * images[idx]
+    return mixed, labels, labels[idx], lam
+
+
+def mixup_loss(criterion, logits, labels_a, labels_b, lam):
+    return lam * criterion(logits, labels_a) + (1.0 - lam) * criterion(logits, labels_b)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Train / eval loops
+# ─────────────────────────────────────────────────────────────────────────────
+
+def train_one_epoch(model, loader, optimizer, device, loss_fn, mixup_alpha):
     model.train()
-    total_loss = 0.0
-    correct    = 0
-    total      = 0
+    total_loss, correct, total = 0.0, 0, 0
 
-    for images, severity_labels in tqdm(loader, leave=False):
-        images          = images.to(device)
-        severity_labels = severity_labels.to(device)
+    for images, labels in tqdm(loader, leave=False):
+        images, labels = images.to(device), labels.to(device)
+        images, la, lb, lam = mixup_batch(images, labels, mixup_alpha)
 
-        # Forward — specialist only returns severity logits
-        severity_logits = model(images)
-
-        loss = loss_fn(severity_logits, severity_labels)
+        logits = model(images)
+        loss   = mixup_loss(loss_fn, logits, la, lb, lam)
 
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         total_loss += loss.item()
-
-        # Accuracy
-        preds   = severity_logits.argmax(dim=1)
-        correct += (preds == severity_labels).sum().item()
+        # Accuracy uses original labels (la == labels before mixup)
+        correct += (logits.argmax(1) == la).sum().item()
         total   += images.size(0)
 
     return total_loss / len(loader), correct / total * 100
@@ -73,214 +107,173 @@ def train_one_epoch(model, loader, optimizer, device, loss_fn):
 
 @torch.no_grad()
 def evaluate_epoch(model, loader, device, loss_fn):
-    """Evaluation for one epoch. Returns avg loss and accuracy."""
     model.eval()
-    total_loss = 0.0
-    correct    = 0
-    total      = 0
+    total_loss, correct, total = 0.0, 0, 0
 
-    for images, severity_labels in loader:
-        images          = images.to(device)
-        severity_labels = severity_labels.to(device)
-
-        severity_logits = model(images)
-        loss            = loss_fn(severity_logits, severity_labels)
-
-        total_loss += loss.item()
-        preds       = severity_logits.argmax(dim=1)
-        correct    += (preds == severity_labels).sum().item()
+    for images, labels in loader:
+        images, labels = images.to(device), labels.to(device)
+        logits = model(images)
+        total_loss += loss_fn(logits, labels).item()
+        correct    += (logits.argmax(1) == labels).sum().item()
         total      += images.size(0)
 
     return total_loss / len(loader), correct / total * 100
 
 
-def train_one_specialist(deg_type: str, data_dir: str, save_dir: str,
-                          epochs: int = 30, batch_size: int = 32,
-                          patience: int = 7, device: torch.device = None):
-    """
-    Trains one severity specialist for the given degradation type.
+# ─────────────────────────────────────────────────────────────────────────────
+# Train one specialist
+# ─────────────────────────────────────────────────────────────────────────────
 
-    Args:
-        deg_type  : one of 'upsample', 'denoise', 'deartifact', 'inpaint'
-        data_dir  : path to your degraded dataset (data_main/degraded)
-        save_dir  : where to save the trained model (specialists/)
-        epochs    : max training epochs
-        patience  : early stopping patience
-    """
-    type_idx  = TYPES.index(deg_type)
+def train_one_specialist(deg_type, data_dir, save_dir,
+                          epochs=None, batch_size=32,
+                          patience=None, device=None):
+
+    cfg       = TYPE_CFG[deg_type]
+    epochs    = epochs   or cfg["epochs"]
+    patience  = patience or cfg["patience"]
     save_path = os.path.join(save_dir, f"{deg_type}_specialist.pth")
 
-    print(f"\n{'='*60}")
-    print(f"Training [{deg_type}] severity specialist")
-    print(f"Save path: {save_path}")
-    print(f"{'='*60}")
+    print(f"\n{'='*65}")
+    print(f"  Training [{deg_type}] specialist")
+    print(f"  backbone  : {_backbone_name(deg_type)}")
+    print(f"  epochs    : {epochs}  patience: {patience}")
+    print(f"  lr_head   : {cfg['lr_head']}  lr_finetune: {cfg['lr_finetune']}")
+    print(f"  phase_b   : epoch {cfg['phase_b']+1}  mixup_alpha: {cfg['mixup_alpha']}")
+    print(f"{'='*65}")
 
-    # ── Data ──────────────────────────────────────────────────────────────
-    # Uses SpecialistDataset which filters to only this type's images
+    type_idx = TYPES.index(deg_type)
     train_loader, val_loader, _ = get_specialist_dataloaders(
         data_dir, type_idx, batch_size=batch_size
     )
 
-    # ── Model ─────────────────────────────────────────────────────────────
-    model = SeveritySpecialist(
-        deg_type=deg_type,
-        dropout_rate=0.4,
-        freeze_backbone=True
-    ).to(device)
+    model   = build_specialist(deg_type, freeze_backbone=True).to(device)
+    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.05)
 
-    # Mild label smoothing — severity levels are ordinal so adjacent errors
-    # are less severe than distant ones
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
-
-    # Phase A — only head trains at higher LR
-    head_params = list(model.severity_head.parameters())
-    optimizer   = torch.optim.Adam(head_params, lr=5e-4, weight_decay=1e-4)
-    scheduler   = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=5, eta_min=1e-5
+    # Phase A — head only
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=cfg["lr_head"], weight_decay=1e-3
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cfg["phase_b"], eta_min=1e-5
     )
 
     best_val_loss    = float('inf')
     patience_counter = 0
-    history          = {'train_loss': [], 'val_loss': [],
-                        'train_acc': [],  'val_acc': []}
-
-    # Unfreeze backbone earlier — severity needs backbone features tuned
-    PHASE_B_START = 5
+    history          = dict(train_loss=[], val_loss=[], train_acc=[], val_acc=[])
 
     for epoch in range(1, epochs + 1):
 
-        # Switch to Phase B — unfreeze backbone at epoch 6
-        if epoch == PHASE_B_START + 1:
+        # ── Switch to Phase B ───────────────────────────────────────────────
+        if epoch == cfg["phase_b"] + 1:
             model.unfreeze_backbone()
-            optimizer = torch.optim.Adam(
-                model.parameters(), lr=3e-5, weight_decay=1e-4
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=cfg["lr_finetune"], weight_decay=1e-3
             )
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=epochs - PHASE_B_START, eta_min=1e-6
+                optimizer, T_max=epochs - cfg["phase_b"], eta_min=1e-7
             )
-            print(f"Phase B started — full fine-tuning at lr=3e-5")
+            print(f"  Phase B — partial fine-tune at lr={cfg['lr_finetune']}")
 
-        # Train and validate
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, optimizer, device, loss_fn
+            model, train_loader, optimizer, device, loss_fn, cfg["mixup_alpha"]
         )
-        val_loss, val_acc = evaluate_epoch(
-            model, val_loader, device, loss_fn
-        )
+        val_loss, val_acc = evaluate_epoch(model, val_loader, device, loss_fn)
         scheduler.step()
 
-        # Log
-        history['train_loss'].append(train_loss)
-        history['val_loss'].append(val_loss)
-        history['train_acc'].append(train_acc)
-        history['val_acc'].append(val_acc)
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["train_acc"].append(train_acc)
+        history["val_acc"].append(val_acc)
 
-        print(f"  Epoch {epoch:02d}/{epochs} | "
-              f"Loss: {train_loss:.4f}/{val_loss:.4f} | "
-              f"Severity: {train_acc:.1f}%/{val_acc:.1f}%")
+        print(f"  Ep {epoch:03d}/{epochs}"
+              f" | Loss {train_loss:.4f}/{val_loss:.4f}"
+              f" | Acc  {train_acc:.1f}%/{val_acc:.1f}%")
 
-        # Save best model
         if val_loss < best_val_loss:
-            best_val_loss = val_loss
+            best_val_loss    = val_loss
             patience_counter = 0
             torch.save(model.state_dict(), save_path)
-            print(f"  → Saved best model (val_acc={val_acc:.1f}%)")
+            print(f"    ✓ saved  val_acc={val_acc:.1f}%")
         else:
             patience_counter += 1
             if patience_counter >= patience:
-                print(f"  Early stopping at epoch {epoch}")
+                print(f"  Early stop at epoch {epoch}")
                 break
 
-    # Save training curve plot
+    # Training curve
     plot_path = os.path.join(save_dir, f"{deg_type}_training_curve.png")
-    plt.figure(figsize=(10, 4))
-    plt.subplot(1, 2, 1)
-    plt.plot(history['train_loss'], label='Train')
-    plt.plot(history['val_loss'],   label='Val')
-    plt.title(f'{deg_type} — Loss')
-    plt.legend()
-    plt.subplot(1, 2, 2)
-    plt.plot(history['train_acc'], label='Train')
-    plt.plot(history['val_acc'],   label='Val')
-    plt.title(f'{deg_type} — Severity Accuracy (%)')
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(plot_path, dpi=120)
-    plt.close()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    ax1.plot(history["train_loss"], label="Train"); ax1.plot(history["val_loss"], label="Val")
+    ax1.set_title(f"{deg_type} — Loss"); ax1.legend()
+    ax2.plot(history["train_acc"],  label="Train"); ax2.plot(history["val_acc"],  label="Val")
+    ax2.set_title(f"{deg_type} — Accuracy (%)"); ax2.legend()
+    plt.tight_layout(); plt.savefig(plot_path, dpi=120); plt.close()
 
-    print(f"\n[{deg_type}] Best val loss: {best_val_loss:.4f}")
-    print(f"[{deg_type}] Model saved to: {save_path}")
-    print(f"[{deg_type}] Training curve: {plot_path}")
-
+    print(f"\n  [{deg_type}] best val loss: {best_val_loss:.4f}")
+    print(f"  [{deg_type}] saved → {save_path}")
+    print(f"  [{deg_type}] curve → {plot_path}")
     return best_val_loss
 
 
+def _backbone_name(deg_type):
+    names = {
+        "upsample":   "MobileNetV3-Small",
+        "denoise":    "EfficientNet-B0 + Laplacian branch",
+        "deartifact": "EfficientNet-B0",
+        "inpaint":    "EfficientNet-B2",
+    }
+    return names[deg_type]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+
 def main(args):
-    # ── Device ────────────────────────────────────────────────────────────
-    if torch.backends.mps.is_available():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("Using CUDA GPU")
+    elif torch.backends.mps.is_available():
         device = torch.device("mps")
-        print("Using Mac M3 GPU (MPS)")
+        print("Using Mac MPS GPU")
     else:
         device = torch.device("cpu")
         print("Using CPU")
 
-    # Create specialists folder
     os.makedirs(args.save_dir, exist_ok=True)
 
-    if args.train_all:
-        # Train all 4 specialists one after another
-        print("\nTraining all 4 specialists...")
-        print("Expected time: ~30 mins each → ~2 hours total on M3\n")
-        results = {}
-        for deg_type in TYPES:
-            best_loss = train_one_specialist(
-                deg_type   = deg_type,
-                data_dir   = args.data_dir,
-                save_dir   = args.save_dir,
-                epochs     = args.epochs,
-                batch_size = args.batch_size,
-                patience   = args.patience,
-                device     = device,
-            )
-            results[deg_type] = best_loss
+    types_to_train = TYPES if args.train_all else [args.type]
 
-        print("\n" + "="*60)
-        print("ALL SPECIALISTS TRAINED")
-        print("="*60)
-        for t, loss in results.items():
-            print(f"  {t:12s} : best val loss = {loss:.4f}")
-        print(f"\nAll models saved to: {args.save_dir}/")
+    if args.type not in TYPES and not args.train_all:
+        print(f"Error: --type must be one of {TYPES}")
+        return
 
-    else:
-        # Train one specific specialist
-        if args.type not in TYPES:
-            print(f"Error: --type must be one of {TYPES}")
-            return
-        train_one_specialist(
-            deg_type   = args.type,
+    results = {}
+    for deg_type in types_to_train:
+        results[deg_type] = train_one_specialist(
+            deg_type   = deg_type,
             data_dir   = args.data_dir,
             save_dir   = args.save_dir,
-            epochs     = args.epochs,
             batch_size = args.batch_size,
-            patience   = args.patience,
             device     = device,
         )
 
+    if args.train_all:
+        print("\n" + "=" * 65)
+        print("ALL SPECIALISTS TRAINED")
+        print("=" * 65)
+        for t, loss in results.items():
+            print(f"  {t:12s} ({_backbone_name(t):<38}) best val loss = {loss:.4f}")
+        print(f"\nAll models → {args.save_dir}/")
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description='Train severity specialist models'
-    )
-    parser.add_argument('--data_dir',   type=str,  required=True,
-                        help='Path to degraded dataset (data_main/degraded)')
-    parser.add_argument('--save_dir',   type=str,  default='specialists',
-                        help='Where to save specialist models')
-    parser.add_argument('--train_all',  action='store_true',
-                        help='Train all 4 specialists')
-    parser.add_argument('--type',       type=str,  default='denoise',
-                        help='Which type to train (if not --train_all)')
-    parser.add_argument('--epochs',     type=int,  default=30)
-    parser.add_argument('--batch_size', type=int,  default=32)
-    parser.add_argument('--patience',   type=int,  default=7)
-    args = parser.parse_args()
-    main(args)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_dir',   required=True)
+    parser.add_argument('--save_dir',   default='specialists')
+    parser.add_argument('--train_all',  action='store_true')
+    parser.add_argument('--type',       default='denoise', choices=TYPES)
+    parser.add_argument('--batch_size', type=int, default=32)
+    main(parser.parse_args())
