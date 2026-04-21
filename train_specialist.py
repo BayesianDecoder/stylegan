@@ -42,21 +42,22 @@ TYPE_CFG = {
         lr_head=5e-4, lr_finetune=3e-5, phase_b=5,
         epochs=30,  patience=7,  mixup_alpha=0.2, skip_phase_b=False,
     ),
-    # denoise: statistics-only MLP (no backbone) — trains in minutes.
-    # Higher LR because the MLP is tiny and converges fast.
+    # denoise: NO mixup — mixing images corrupts noise statistics→label mapping.
+    # std(lam*A+(1-lam)*B) ≠ lam*std(A)+(1-lam)*std(B), so model learns wrong
+    # mapping during training and predicts randomly on val (pure images).
     "denoise": dict(
-        lr_head=1e-3, lr_finetune=0, phase_b=999,
-        epochs=60,  patience=15, mixup_alpha=0.3, skip_phase_b=True,
+        lr_head=3e-4, lr_finetune=0, phase_b=999,
+        epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
     ),
-    # deartifact: unfreeze only last 1 block — faster, avoids overfitting
+    # deartifact: low mixup — mixing JPEG images creates unrealistic artifacts
     "deartifact": dict(
         lr_head=3e-4, lr_finetune=1e-5, phase_b=8,
-        epochs=50,  patience=10, mixup_alpha=0.3, skip_phase_b=False,
+        epochs=50,  patience=10, mixup_alpha=0.1, skip_phase_b=False,
     ),
-    # inpaint: unfreeze only last 1 block — faster convergence
+    # inpaint: low mixup — mixing masked images confuses spatial extent signal
     "inpaint": dict(
         lr_head=3e-4, lr_finetune=1e-5, phase_b=8,
-        epochs=50,  patience=10, mixup_alpha=0.3, skip_phase_b=False,
+        epochs=50,  patience=10, mixup_alpha=0.1, skip_phase_b=False,
     ),
 }
 

@@ -143,12 +143,22 @@ class SeveritySpecialist(nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DenoiseSpecialist(nn.Module):
+    """
+    Statistics-only MLP for noise severity. NO backbone, NO mixup.
+
+    Mixup corrupts noise statistics: std(lam*A + (1-lam)*B) ≠ lam*std(A) +
+    (1-lam)*std(B), so the model learns wrong stats→label mapping during
+    training and predicts randomly on val (pure images, no mixing).
+
+    Uses 10 multi-scale statistics: 3-scale Laplacian + Sobel + local variance.
+    Multi-scale separates noise from image edges — at 4× downsampling, noise
+    averages out but edges remain, giving a clean noise-only signal.
+    """
 
     def __init__(self, deg_type="denoise", dropout_rate=0.3, freeze_backbone=True):
         super().__init__()
         self.deg_type = deg_type
 
-        # Fixed filter kernels — not learned, not part of backbone
         lap = torch.tensor([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]])
         sx  = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]])
         sy  = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]])
@@ -156,47 +166,52 @@ class DenoiseSpecialist(nn.Module):
         self.register_buffer("_sx",  sx.view(1, 1, 3, 3))
         self.register_buffer("_sy",  sy.view(1, 1, 3, 3))
 
-        # 8 noise statistics → MLP → 5 severity classes
+        # 10 stats → MLP. No BatchNorm — avoids running-stat mismatch on val.
         self.mlp = nn.Sequential(
-            nn.Linear(8, 128), nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(dropout_rate),
-            nn.Linear(128, 64), nn.BatchNorm1d(64), nn.ReLU(), nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(64, 5),
+            nn.Linear(10, 256), nn.ReLU(), nn.Dropout(dropout_rate),
+            nn.Linear(256, 128), nn.ReLU(), nn.Dropout(dropout_rate * 0.5),
+            nn.Linear(128, 5),
         )
 
     def _noise_stats(self, x):
-        """8 noise statistics that directly measure severity at multiple scales."""
-        gray = x.mean(dim=1, keepdim=True)                          # (B,1,H,W)
+        gray = x.mean(dim=1, keepdim=True)          # (B,1,H,W)
 
-        # Laplacian: std and mean-abs (HF noise power)
-        lap     = F.conv2d(gray, self._lap, padding=1)
-        lap_std = lap.flatten(1).std(dim=1, keepdim=True)
-        lap_mab = lap.abs().flatten(1).mean(dim=1, keepdim=True)
+        # 3-scale Laplacian std — noise averages out at lower scales but
+        # edges persist, so scale ratio isolates noise contribution
+        def lap_std(g):
+            return F.conv2d(g, self._lap, padding=1).flatten(1).std(dim=1, keepdim=True)
 
-        # Sobel gradient magnitude: mean and std
-        gx       = F.conv2d(gray, self._sx, padding=1)
-        gy       = F.conv2d(gray, self._sy, padding=1)
-        grad     = (gx ** 2 + gy ** 2).sqrt()
-        grad_mu  = grad.flatten(1).mean(dim=1, keepdim=True)
-        grad_std = grad.flatten(1).std(dim=1, keepdim=True)
+        s1 = lap_std(gray)                               # full scale
+        s2 = lap_std(F.avg_pool2d(gray, 2))              # 2× down
+        s4 = lap_std(F.avg_pool2d(gray, 4))              # 4× down
+        # ratio s1/s4: if mostly noise, ratio ≈ 4; if edges, ratio ≈ 1
+        ratio = s1 / (s4 + 1e-6)
 
-        # Local variance: deviation from 8×8 local mean (noise in smooth areas)
-        lmu      = F.avg_pool2d(gray, 8, stride=4, padding=2)
-        lmu_up   = F.interpolate(lmu, size=gray.shape[2:], mode='nearest')
-        resid    = (gray - lmu_up) ** 2
-        lvar_mu  = resid.flatten(1).mean(dim=1, keepdim=True)
-        lvar_std = resid.flatten(1).std(dim=1, keepdim=True)
+        # Sobel gradient magnitude
+        gx      = F.conv2d(gray, self._sx, padding=1)
+        gy      = F.conv2d(gray, self._sy, padding=1)
+        grad    = (gx ** 2 + gy ** 2).sqrt()
+        g_mu    = grad.flatten(1).mean(dim=1, keepdim=True)
+        g_std   = grad.flatten(1).std(dim=1, keepdim=True)
 
-        # High-frequency energy: image minus box-blurred image
-        blur     = F.avg_pool2d(gray, 5, stride=1, padding=2)
-        hf       = (gray - blur).abs()
-        hf_mu    = hf.flatten(1).mean(dim=1, keepdim=True)
-        hf_std   = hf.flatten(1).std(dim=1, keepdim=True)
+        # Local residual variance (noise in smooth regions)
+        lmu     = F.avg_pool2d(gray, 8, stride=4, padding=2)
+        lmu_up  = F.interpolate(lmu, size=gray.shape[2:], mode='nearest')
+        resid   = (gray - lmu_up) ** 2
+        lv_mu   = resid.flatten(1).mean(dim=1, keepdim=True)
+        lv_std  = resid.flatten(1).std(dim=1, keepdim=True)
 
-        return torch.cat([lap_std, lap_mab, grad_mu, grad_std,
-                          lvar_mu, lvar_std, hf_mu, hf_std], dim=1)  # (B, 8)
+        # High-frequency energy
+        blur    = F.avg_pool2d(gray, 5, stride=1, padding=2)
+        hf      = (gray - blur).abs()
+        hf_mu   = hf.flatten(1).mean(dim=1, keepdim=True)
+        hf_std  = hf.flatten(1).std(dim=1, keepdim=True)
+
+        return torch.cat([s1, s2, s4, ratio, g_mu, g_std,
+                          lv_mu, lv_std, hf_mu, hf_std], dim=1)  # (B, 10)
 
     def unfreeze_backbone(self):
-        pass  # no backbone — nothing to unfreeze
+        pass
 
     def forward(self, x):
         return self.mlp(self._noise_stats(x))
