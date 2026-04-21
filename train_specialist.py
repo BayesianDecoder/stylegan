@@ -50,11 +50,10 @@ TYPE_CFG = {
         epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
     ),
     # deartifact: EfficientNet-B0 full backbone unfreeze at Phase B.
-    # Statistics MLP had zero signal (JPEG artifacts are spatially structured,
-    # not globally uniform — global stats compress away the block pattern info).
+    # Deartifact specialist is statistics-only MLP (no backbone to unfreeze).
     "deartifact": dict(
-        lr_head=3e-4, lr_finetune=3e-5, phase_b=5,
-        epochs=60,  patience=12, mixup_alpha=0.0, skip_phase_b=False,
+        lr_head=7e-4, lr_finetune=0, phase_b=999,
+        epochs=90,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
     ),
     # inpaint: EfficientNet-B2 full backbone unfreeze — mask spatial extent
     # requires spatial features, statistics compress away spatial info.
@@ -149,12 +148,17 @@ def train_one_specialist(deg_type, data_dir, save_dir,
     print(f"{'='*65}")
 
     type_idx = TYPES.index(deg_type)
-    train_loader, val_loader, _ = get_specialist_dataloaders(
+    train_loader, val_loader, test_loader = get_specialist_dataloaders(
         data_dir, type_idx, batch_size=batch_size
     )
 
     model   = build_specialist(deg_type, freeze_backbone=True).to(device)
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.05)
+    # Optional class reweighting helps when severity levels are uneven.
+    train_labels = train_loader.dataset.df["severity_label"].to_numpy(dtype=np.int64)
+    counts = np.bincount(train_labels, minlength=len(LEVELS)).astype(np.float32)
+    inv = 1.0 / np.clip(counts, a_min=1.0, a_max=None)
+    cls_weights = torch.tensor(inv / inv.mean(), dtype=torch.float32, device=device)
+    loss_fn = nn.CrossEntropyLoss(weight=cls_weights, label_smoothing=0.03)
 
     # Phase A — head only
     optimizer = torch.optim.AdamW(
@@ -166,6 +170,7 @@ def train_one_specialist(deg_type, data_dir, save_dir,
     )
 
     best_val_loss    = float('inf')
+    best_val_acc     = -1.0
     patience_counter = 0
     history          = dict(train_loss=[], val_loss=[], train_acc=[], val_acc=[])
 
@@ -198,8 +203,13 @@ def train_one_specialist(deg_type, data_dir, save_dir,
               f" | Loss {train_loss:.4f}/{val_loss:.4f}"
               f" | Acc  {train_acc:.1f}%/{val_acc:.1f}%")
 
-        if val_loss < best_val_loss:
+        improved = (val_acc > best_val_acc + 1e-6) or (
+            abs(val_acc - best_val_acc) <= 1e-6 and val_loss < best_val_loss
+        )
+
+        if improved:
             best_val_loss    = val_loss
+            best_val_acc     = val_acc
             patience_counter = 0
             torch.save(model.state_dict(), save_path)
             print(f"    ✓ saved  val_acc={val_acc:.1f}%")
@@ -218,17 +228,24 @@ def train_one_specialist(deg_type, data_dir, save_dir,
     ax2.set_title(f"{deg_type} — Accuracy (%)"); ax2.legend()
     plt.tight_layout(); plt.savefig(plot_path, dpi=120); plt.close()
 
-    print(f"\n  [{deg_type}] best val loss: {best_val_loss:.4f}")
+    # Evaluate the saved best checkpoint for consistent final metrics.
+    model.load_state_dict(torch.load(save_path, map_location=device))
+    best_val_loss_eval, best_val_acc_eval = evaluate_epoch(model, val_loader, device, loss_fn)
+    test_loss, test_acc = evaluate_epoch(model, test_loader, device, loss_fn)
+
+    print(f"\n  [{deg_type}] best val acc : {best_val_acc:.2f}%")
+    print(f"  [{deg_type}] best val loss: {best_val_loss_eval:.4f}")
+    print(f"  [{deg_type}] test acc/loss: {test_acc:.2f}% / {test_loss:.4f}")
     print(f"  [{deg_type}] saved → {save_path}")
     print(f"  [{deg_type}] curve → {plot_path}")
-    return best_val_loss
+    return best_val_acc
 
 
 def _backbone_name(deg_type):
     names = {
         "upsample":   "MobileNetV3-Small",
         "denoise":    "Statistics MLP (no backbone)",
-        "deartifact": "Statistics MLP (8x8 block features)",
+        "deartifact": "Statistics MLP (JPEG block features)",
         "inpaint":    "EfficientNet-B2 (full unfreeze at Phase B)",
     }
     return names[deg_type]
@@ -271,8 +288,8 @@ def main(args):
         print("\n" + "=" * 65)
         print("ALL SPECIALISTS TRAINED")
         print("=" * 65)
-        for t, loss in results.items():
-            print(f"  {t:12s} ({_backbone_name(t):<38}) best val loss = {loss:.4f}")
+        for t, val_acc in results.items():
+            print(f"  {t:12s} ({_backbone_name(t):<38}) best val acc = {val_acc:.2f}%")
         print(f"\nAll models → {args.save_dir}/")
 
 

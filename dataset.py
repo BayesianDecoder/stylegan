@@ -142,6 +142,7 @@ Applies augmentation only during training.
 """
  
 import os
+import numpy as np
 import pandas as pd
 from PIL import Image
 import torch
@@ -312,19 +313,35 @@ class SpecialistDataset(Dataset):
         csv_path = os.path.join(data_dir, 'labels.csv')
         df = pd.read_csv(csv_path)
  
-        # FILTER — keep only rows matching the requested type
-        # This is the key difference from DegradationDataset
+        # FILTER — keep only rows matching the requested type.
         df = df[df['type_label'] == type_idx].copy()
-        df = df.sample(frac=1, random_state=42).reset_index(drop=True)
- 
-        # Split filtered subset 80/10/10
-        n = len(df)
-        if split == 'train':
-            self.df = df.iloc[:int(0.8 * n)]
-        elif split == 'val':
-            self.df = df.iloc[int(0.8 * n):int(0.9 * n)]
+
+        # Stratified 80/10/10 split by severity_label keeps all classes balanced
+        # across train/val/test, which improves specialist val stability.
+        rng = np.random.default_rng(42)
+        split_rows = []
+        for sev in range(len(LEVELS)):
+            grp = df[df['severity_label'] == sev]
+            if grp.empty:
+                continue
+            idx = grp.index.to_numpy(copy=True)
+            rng.shuffle(idx)
+            n = len(idx)
+            n_train = int(0.8 * n)
+            n_val = int(0.1 * n)
+            if split == 'train':
+                chosen = idx[:n_train]
+            elif split == 'val':
+                chosen = idx[n_train:n_train + n_val]
+            else:
+                chosen = idx[n_train + n_val:]
+            if chosen.size:
+                split_rows.append(df.loc[chosen])
+
+        if split_rows:
+            self.df = pd.concat(split_rows, axis=0).sample(frac=1.0, random_state=42)
         else:
-            self.df = df.iloc[int(0.9 * n):]
+            self.df = df.iloc[0:0]
  
         self.df = self.df.reset_index(drop=True)
  
