@@ -224,58 +224,37 @@ class DenoiseSpecialist(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DeartifactSpecialist — EfficientNet-B0 + block statistics (hybrid)
+# DeartifactSpecialist — EfficientNet-B0 (spatial texture/block features)
 #
-# Pure statistics: zero signal (spatially structured patterns, not global).
-# Pure CNN frozen: ~62% stuck (backbone treats artifacts as texture).
-# Hybrid: EfficientNet-B0 visual features + 4 direct block statistics
-# concatenated before the head. The statistics give an explicit blocking signal
-# the CNN struggles to extract; the CNN provides spatial context the stats miss.
+# JPEG artifacts are spatially structured (8x8 block boundaries and ringing),
+# so a CNN backbone tends to outperform hand-crafted global statistics.
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DeartifactSpecialist(nn.Module):
+    """EfficientNet-B0 specialist for JPEG artifact severity."""
 
-    def __init__(self, deg_type="deartifact", dropout_rate=0.45, freeze_backbone=True):
+    def __init__(self, deg_type="deartifact", dropout_rate=0.4, freeze_backbone=True):
         super().__init__()
         self.deg_type = deg_type
-        backbone      = models.efficientnet_b0(weights='DEFAULT')
+        backbone = models.efficientnet_b0(weights='DEFAULT')
         self.features = backbone.features
-        self.avgpool  = nn.AdaptiveAvgPool2d(1)
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
 
         if freeze_backbone:
             for p in self.features.parameters():
                 p.requires_grad = False
 
-        lap = torch.tensor([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]])
-        self.register_buffer("_lap", lap.view(1, 1, 3, 3))
-
-        # 1280 CNN features + 4 block stats = 1284
-        self.severity_head = _make_head(1280 + 4, dropout_rate)
-
-    def _block_stats(self, x):
-        """4 direct JPEG blocking statistics normalised by image std."""
-        gray    = x.mean(dim=1, keepdim=True)
-        iscale  = gray.flatten(1).std(dim=1, keepdim=True) + 1e-6
-
-        blk     = F.avg_pool2d(gray, 8, stride=8)
-        blk_up  = F.interpolate(blk, size=gray.shape[2:], mode='nearest')
-        br_mu   = (gray - blk_up).abs().flatten(1).mean(dim=1, keepdim=True)
-
-        h_mu    = (gray[:, :, :, 8:] - gray[:, :, :, :-8]).abs().flatten(1).mean(dim=1, keepdim=True)
-        v_mu    = (gray[:, :, 8:, :] - gray[:, :, :-8, :]).abs().flatten(1).mean(dim=1, keepdim=True)
-        lap_std = F.conv2d(gray, self._lap, padding=1).flatten(1).std(dim=1, keepdim=True)
-
-        return torch.cat([br_mu, h_mu, v_mu, lap_std], dim=1) / iscale   # (B, 4)
+        self.severity_head = _make_head(1280, dropout_rate)
 
     def unfreeze_backbone(self):
+        # Full unfreeze gives the model capacity to adapt low-level texture filters.
         for p in self.features.parameters():
             p.requires_grad = True
         print(f"[{self.deg_type}] Full backbone unfreeze — all EfficientNet-B0 layers")
 
     def forward(self, x):
-        cnn_feat = self.avgpool(self.features(x)).flatten(1)   # (B, 1280)
-        blk_feat = self._block_stats(x)                        # (B, 4)
-        return self.severity_head(torch.cat([cnn_feat, blk_feat], dim=1))
+        feat = self.avgpool(self.features(x)).flatten(1)
+        return self.severity_head(feat)
 
     def predict_severity(self, x):
         self.eval()
@@ -335,7 +314,7 @@ def build_specialist(deg_type, freeze_backbone=True):
     elif deg_type == "denoise":
         return DenoiseSpecialist(deg_type,    dropout_rate=0.3,  freeze_backbone=freeze_backbone)
     elif deg_type == "deartifact":
-        return DeartifactSpecialist(deg_type, dropout_rate=0.3,  freeze_backbone=freeze_backbone)
+        return DeartifactSpecialist(deg_type, dropout_rate=0.4,  freeze_backbone=freeze_backbone)
     elif deg_type == "inpaint":
         return InpaintSpecialist(deg_type,    dropout_rate=0.45, freeze_backbone=freeze_backbone)
     else:

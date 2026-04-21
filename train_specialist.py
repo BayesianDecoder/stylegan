@@ -41,6 +41,7 @@ TYPE_CFG = {
     "upsample": dict(
         lr_head=5e-4, lr_finetune=3e-5, phase_b=5,
         epochs=30,  patience=7,  mixup_alpha=0.2, skip_phase_b=False,
+        use_class_weights=True, label_smoothing=0.03,
     ),
     # denoise: NO mixup — mixing images corrupts noise statistics→label mapping.
     # std(lam*A+(1-lam)*B) ≠ lam*std(A)+(1-lam)*std(B), so model learns wrong
@@ -48,12 +49,13 @@ TYPE_CFG = {
     "denoise": dict(
         lr_head=3e-4, lr_finetune=0, phase_b=999,
         epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
+        use_class_weights=True, label_smoothing=0.03,
     ),
     # deartifact: EfficientNet-B0 full backbone unfreeze at Phase B.
-    # Deartifact specialist is statistics-only MLP (no backbone to unfreeze).
     "deartifact": dict(
-        lr_head=7e-4, lr_finetune=0, phase_b=999,
-        epochs=90,  patience=20, mixup_alpha=0.0, skip_phase_b=True,
+        lr_head=3e-4, lr_finetune=1e-5, phase_b=5,
+        epochs=70,  patience=15, mixup_alpha=0.0, skip_phase_b=False,
+        use_class_weights=False, label_smoothing=0.0,
     ),
     # inpaint: EfficientNet-B2 full backbone unfreeze — mask spatial extent
     # requires spatial features, statistics compress away spatial info.
@@ -61,6 +63,7 @@ TYPE_CFG = {
     "inpaint": dict(
         lr_head=3e-4, lr_finetune=1e-5, phase_b=5,
         epochs=60,  patience=12, mixup_alpha=0.0, skip_phase_b=False,
+        use_class_weights=True, label_smoothing=0.03,
     ),
 }
 
@@ -153,12 +156,17 @@ def train_one_specialist(deg_type, data_dir, save_dir,
     )
 
     model   = build_specialist(deg_type, freeze_backbone=True).to(device)
-    # Optional class reweighting helps when severity levels are uneven.
     train_labels = train_loader.dataset.df["severity_label"].to_numpy(dtype=np.int64)
-    counts = np.bincount(train_labels, minlength=len(LEVELS)).astype(np.float32)
-    inv = 1.0 / np.clip(counts, a_min=1.0, a_max=None)
-    cls_weights = torch.tensor(inv / inv.mean(), dtype=torch.float32, device=device)
-    loss_fn = nn.CrossEntropyLoss(weight=cls_weights, label_smoothing=0.03)
+    if cfg.get("use_class_weights", True):
+        counts = np.bincount(train_labels, minlength=len(LEVELS)).astype(np.float32)
+        inv = 1.0 / np.clip(counts, a_min=1.0, a_max=None)
+        cls_weights = torch.tensor(inv / inv.mean(), dtype=torch.float32, device=device)
+    else:
+        cls_weights = None
+    loss_fn = nn.CrossEntropyLoss(
+        weight=cls_weights,
+        label_smoothing=cfg.get("label_smoothing", 0.03)
+    )
 
     # Phase A — head only
     optimizer = torch.optim.AdamW(
@@ -245,7 +253,7 @@ def _backbone_name(deg_type):
     names = {
         "upsample":   "MobileNetV3-Small",
         "denoise":    "Statistics MLP (no backbone)",
-        "deartifact": "Statistics MLP (JPEG block features)",
+        "deartifact": "EfficientNet-B0 (full unfreeze at Phase B)",
         "inpaint":    "EfficientNet-B2 (full unfreeze at Phase B)",
     }
     return names[deg_type]
