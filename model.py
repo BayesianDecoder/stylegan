@@ -274,37 +274,62 @@ class DeartifactSpecialist(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# InpaintSpecialist — EfficientNet-B2, full backbone fine-tune from Phase B
+# InpaintSpecialist — statistics-only MLP, NO backbone
 #
-# Inpaint severity = mask spatial extent (XS=tiny, XL=huge).
-# Statistics lose spatial information so backbone IS needed here.
-# Full backbone unfreeze at Phase B with low LR forces the model to learn
-# mask-extent features while ImageNet pretraining provides a useful warm start.
+# WHY no backbone: inpaint strokes are exact-zero pixels (arr[...] = 0 in
+# generate_dataset.py). After ImageNet normalisation, black pixels land at
+# R≈-2.12, G≈-2.04, B≈-1.80 — well below any natural face dark (~-1.77).
+# The fraction of black pixels scales monotonically with stroke count
+# (XS=1 → ~5% masked, XL=17 → ~55% masked), giving a clean 1D severity
+# signal that requires NO backbone. EfficientNet-B2 is ImageNet-pretrained
+# to IGNORE black regions and learns face-identity shortcuts instead
+# (train 66%/val 61% at epoch 14 and growing gap — memorisation confirmed).
+#
+# Fix: skip the backbone. Detect exact-zero pixels per channel, compute
+# total masked fraction + row/col coverage, feed to a tiny MLP.
 # ─────────────────────────────────────────────────────────────────────────────
 
 class InpaintSpecialist(nn.Module):
+    """
+    Statistics-only MLP for inpaint severity. NO backbone, NO mixup.
 
-    def __init__(self, deg_type="inpaint", dropout_rate=0.45, freeze_backbone=True):
+    Stroke pixels are exactly 0 in all channels. After ImageNet normalisation
+    (mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225]) they appear at
+    R≈-2.12, G≈-2.04, B≈-1.80. Threshold -1.7 captures all of these while
+    rejecting natural face darks (value≈20 → B≈-1.63, fails the threshold).
+
+    Requiring ALL THREE channels < -1.7 gives near-zero false positives on
+    natural face pixels; the masked fraction then directly encodes severity.
+    """
+
+    def __init__(self, deg_type="inpaint", dropout_rate=0.3, freeze_backbone=True):
         super().__init__()
         self.deg_type = deg_type
-        backbone      = models.efficientnet_b2(weights='DEFAULT')
-        self.features = backbone.features
-        self.avgpool  = nn.AdaptiveAvgPool2d(1)
 
-        if freeze_backbone:
-            for p in self.features.parameters():
-                p.requires_grad = False
+        # 6 statistics → MLP
+        self.mlp = nn.Sequential(
+            nn.Linear(6, 128), nn.ReLU(), nn.Dropout(dropout_rate),
+            nn.Linear(128, 64), nn.ReLU(), nn.Dropout(dropout_rate * 0.5),
+            nn.Linear(64, 5),
+        )
 
-        self.severity_head = _make_head(1408, dropout_rate)
+    def _mask_stats(self, x):
+        # Exact-zero pixel: all three channels below the normalisation floor
+        black = ((x[:, 0] < -1.7) & (x[:, 1] < -1.7) & (x[:, 2] < -1.7))  # (B,H,W)
+        m = black.float()
+
+        frac    = m.flatten(1).mean(1, keepdim=True)               # (B,1) total masked fraction
+        row_cov = (m.max(dim=2)[0] > 0.5).float().mean(1, keepdim=True)  # (B,1) rows with mask
+        col_cov = (m.max(dim=1)[0] > 0.5).float().mean(1, keepdim=True)  # (B,1) cols with mask
+
+        return torch.cat([frac, frac.sqrt(), row_cov, col_cov,
+                          frac * row_cov, frac * col_cov], dim=1)   # (B,6)
 
     def unfreeze_backbone(self):
-        # Unfreeze ALL layers — mask extent needs full spatial feature adaptation
-        for p in self.features.parameters():
-            p.requires_grad = True
-        print(f"[{self.deg_type}] Full backbone unfreeze — all EfficientNet-B2 layers")
+        pass
 
     def forward(self, x):
-        return self.severity_head(self.avgpool(self.features(x)).flatten(1))
+        return self.mlp(self._mask_stats(x))
 
     def predict_severity(self, x):
         self.eval()

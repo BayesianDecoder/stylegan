@@ -377,24 +377,22 @@ class SpecialistDataset(Dataset):
                     normalize,
                 ])
         elif self.type_idx == TYPES.index('inpaint'):
-            # Strong augmentation for inpaint too — mask coverage (not position)
-            # is the severity signal; rotation/flip diversify mask position without
-            # changing coverage, preventing spatial memorisation.
+            # NO crop, NO color jitter, NO rotation — statistics depend on exact
+            # black pixel values and total masked area. ColorJitter shifts pixel
+            # values away from 0 (corrupting the mask signal); crop removes stroke
+            # edges and changes the masked fraction; rotation turns rectangular
+            # strokes into diagonal bands that change row/col coverage. Only
+            # horizontal flip is safe (strokes span full width — coverage unchanged).
             if split == 'train':
                 self.transform = transforms.Compose([
                     transforms.Resize((256, 256)),
-                    transforms.RandomCrop(224),
                     transforms.RandomHorizontalFlip(p=0.5),
-                    transforms.RandomVerticalFlip(p=0.3),
-                    transforms.RandomRotation(degrees=10),
-                    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
                     transforms.ToTensor(),
                     normalize,
                 ])
             else:
                 self.transform = transforms.Compose([
                     transforms.Resize((256, 256)),
-                    transforms.CenterCrop(224),
                     transforms.ToTensor(),
                     normalize,
                 ])

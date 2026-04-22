@@ -62,13 +62,15 @@ TYPE_CFG = {
         use_class_weights=True, label_smoothing=0.08,
         wd_finetune=5e-3,
     ),
-    # inpaint: EfficientNet-B2 full backbone unfreeze — mask spatial extent
-    # requires spatial features. Raised lr_finetune 1e-5→1e-4 (was underfitting:
-    # train/val gap only 6% at 62% — backbone not adapting fast enough).
+    # inpaint: statistics MLP — no backbone. Strokes are exact-zero pixels;
+    # masked fraction scales monotonically with stroke count (XS=~5%, XL=~55%).
+    # EfficientNet-B2 learned face-identity shortcuts instead (66%/61% at
+    # epoch 14 with growing gap — confirmed memorisation). No mixup: mixing
+    # changes the black pixel fraction in a non-linear way (same issue as denoise).
     "inpaint": dict(
-        lr_head=3e-4, lr_finetune=1e-4, phase_b=3,
-        epochs=80,  patience=20, mixup_alpha=0.0, skip_phase_b=False,
-        use_class_weights=True, label_smoothing=0.03,
+        lr_head=3e-4, lr_finetune=0, phase_b=999,
+        epochs=60, patience=15, mixup_alpha=0.0, skip_phase_b=True,
+        use_class_weights=True, label_smoothing=0.0,
     ),
 }
 
@@ -260,7 +262,7 @@ def _backbone_name(deg_type):
         "upsample":   "MobileNetV3-Small",
         "denoise":    "Statistics MLP (no backbone)",
         "deartifact": "EfficientNet-B0 (full unfreeze at Phase B, lr=1e-4)",
-        "inpaint":    "EfficientNet-B2 (full unfreeze at Phase B)",
+        "inpaint":    "Statistics MLP (no backbone)",
     }
     return names[deg_type]
 
