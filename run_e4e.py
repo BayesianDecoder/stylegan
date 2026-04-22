@@ -248,7 +248,8 @@ if __name__ == '__main__':
     else:                             raise Exception("Invalid task name")
 
     if config.task_name is not None:
-        tasks = [t for t in tasks if t.name == config.task_name]
+        allowed_names = set(config.task_name.split(","))
+        tasks = [t for t in tasks if t.name in allowed_names]
     if config.levels is not None:
         allowed = set(config.levels.split(","))
         tasks   = [t for t in tasks if str(t.level) in allowed]
